@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.preference.PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_drawerTheme"
+        android:title="@string/pref_category_theme">
+
+        <ch.deletescape.lawnchair.preferences.AutoModeSeekbarPreference
+            android:key="pref_allAppsOpacitySB"
+            android:title="@string/opacity"
+            app:minValue="0"
+            app:maxValue="1"
+            app:summaryFormat="%.0f%%"
+            app:summaryMultiplier="100"
+            android:persistent="true" />
+
+        <ch.deletescape.lawnchair.colors.preferences.ColorPickerPreference
+            android:key="pref_allAppsBackgroundColorResolver"
+            android:title="@string/background_color"
+            app:colorMode="RGB"
+            app:resolvers="@array/resolvers_shelf_background"/>
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+    
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_drawerIcons"
+        android:title="@string/pref_category_icons">
+
+        <ch.deletescape.lawnchair.preferences.SeekbarPreference
+            android:key="pref_allAppsIconSize"
+            android:persistent="true"
+            android:title="@string/icon_scale_pref_title"
+            app:defaultSeekbarValue="1.0"
+            app:maxValue="2.0"
+            app:minValue="0.3"
+            app:steps="170"
+            app:summaryFormat="%.0f%%"
+            app:summaryMultiplier="100" />
+
+        <ch.deletescape.lawnchair.settings.ui.DrawerGridSizePreference
+            android:key="pref_drawer_grid_size"
+            android:title="@string/pref_drawer_columns"/>
+
+        <ch.deletescape.lawnchair.preferences.SeekbarPreference
+            android:key="pref_allAppsPaddingScale"
+            android:persistent="true"
+            android:title="@string/pref_drawer_padding"
+            app:defaultSeekbarValue="1.0"
+            app:maxValue="1.5"
+            app:minValue="0"
+            app:steps="150"
+            app:summaryFormat="%.0f%%"
+            app:summaryMultiplier="100"/>
+        
+        <Preference
+            android:key="pref_hiddenApps"
+            android:title="@string/hide_apps"
+            android:summary="@string/hide_apps_sum"
+            android:fragment="ch.deletescape.lawnchair.preferences.HiddenAppsFragment" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_hideAllAppsAppLabels"
+            android:title="@string/hide_icon_labels_pref_title"
+            android:defaultValue="false"
+            android:disableDependentsState="true"
+            android:persistent="true" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_iconLabelsInTwoLines"
+            android:title="@string/pref_mutliline_labels"
+            android:dependency="pref_hideAllAppsAppLabels"
+            android:defaultValue="false"
+            android:persistent="true" />
+
+        <ch.deletescape.lawnchair.preferences.SeekbarPreference
+            android:key="pref_allAppsIconTextScale"
+            android:title="@string/icon_text_scale_pref_title"
+            android:dependency="pref_hideAllAppsAppLabels"
+            app:minValue="0.3"
+            app:maxValue="1.8"
+            app:summaryFormat="%.0f%%"
+            app:summaryMultiplier="100"
+            app:defaultSeekbarValue="1.0"
+            app:steps="150"/>
+
+        <ch.deletescape.lawnchair.colors.preferences.ColorPickerPreference
+            android:key="pref_allAppsLabelColorResolver"
+            android:title="@string/text_color"
+            android:dependency="pref_hideAllAppsAppLabels"
+            app:colorMode="RGB"
+            app:resolvers="@array/resolvers_drawer_labels"/>
+
+        <ch.deletescape.lawnchair.settings.ui.PreferenceDialogPreference
+            android:key="pref_iconPopupMenu"
+            android:title="@string/pref_icon_popup_menu"
+            app:content="@xml/lawnchair_drawer_icon_popup_menu_preferences" />
+
+        <ch.deletescape.lawnchair.preferences.Preference
+            android:title="@string/categorization"
+            android:fragment="ch.deletescape.lawnchair.groups.ui.AppCategorizationFragment"/>
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+    
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_drawerSearchbar"
+        android:title="@string/pref_category_searchbar">
+        
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_allAppsSearch"
+            android:title="@string/title_all_apps_search"
+            android:defaultValue="true" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_search_hidden_apps"
+            android:title="@string/title_search_hidden_apps"
+            android:summary="@string/summary_search_hidden_apps"
+            android:defaultValue="false" />
+
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+    
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_drawerSuggestions"
+        android:title="@string/suggestion_pref_screen_title">
+        
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_show_predictions"
+            android:title="@string/title_app_suggestions"
+            android:summary="@string/summary_app_suggestions"
+            android:defaultValue="true"
+            app:controllerClass=".AppSuggestionsController"
+            app:searchTitle="@string/title_app_suggestions_in_search" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_show_suggested_actions"
+            android:title="@string/app_actions_pref_title"
+            android:summary="@string/app_actions_pref_desc"
+            android:defaultValue="true"
+            app:searchTitle="@string/app_actions_pref_title_in_search" />
+
+        <ch.deletescape.lawnchair.preferences.Preference
+            android:key="pref_reset_hidden_suggested_actions"
+            android:title="@string/app_actions_reset_pref_title"
+            android:summary="@string/app_actions_reset_pref_summary" />
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_drawerMisc"
+        android:title="@string/pref_category_misc">
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_showAllAppsLabel"
+            android:title="@string/all_apps_label_pref_title"
+            android:defaultValue="false"
+            android:persistent="true"
+            app:controllerClass=".AllAppsLabelController" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_separateWorkApps"
+            android:title="@string/separate_work_apps_pref_title"
+            android:defaultValue="true"
+            android:persistent="true" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_keepScrollState"
+            android:title="@string/keep_scroll_state_pref_title"
+            android:defaultValue="false"
+            android:persistent="true" />
+
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+</androidx.preference.PreferenceScreen>

@@ -16,42 +16,35 @@
 
 package com.android.launcher3.util;
 
-import static android.content.pm.PackageManager.MATCH_SYSTEM_ONLY;
-
 import android.app.AppOpsManager;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.LauncherActivityInfo;
-import android.content.pm.LauncherApps;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ResolveInfo;
-import android.content.res.Resources;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.PatternMatcher;
 import android.os.UserHandle;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Log;
-import android.util.Pair;
 import android.widget.Toast;
-
+import com.android.launcher3.AppInfo;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.LauncherAppWidgetInfo;
 import com.android.launcher3.PendingAddItemInfo;
+import com.android.launcher3.PromiseAppInfo;
 import com.android.launcher3.R;
+import com.android.launcher3.ShortcutInfo;
 import com.android.launcher3.Utilities;
-import com.android.launcher3.model.data.AppInfo;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.ItemInfoWithIcon;
-import com.android.launcher3.model.data.LauncherAppWidgetInfo;
-import com.android.launcher3.model.data.WorkspaceItemInfo;
-
+import com.android.launcher3.compat.LauncherAppsCompat;
 import java.net.URISyntaxException;
 import java.util.List;
 
@@ -64,12 +57,12 @@ public class PackageManagerHelper {
 
     private final Context mContext;
     private final PackageManager mPm;
-    private final LauncherApps mLauncherApps;
+    private final LauncherAppsCompat mLauncherApps;
 
     public PackageManagerHelper(Context context) {
         mContext = context;
         mPm = context.getPackageManager();
-        mLauncherApps = context.getSystemService(LauncherApps.class);
+        mLauncherApps = LauncherAppsCompat.getInstance(context);
     }
 
     /**
@@ -77,9 +70,36 @@ public class PackageManagerHelper {
      * guarantee that the app is on SD card.
      */
     public boolean isAppOnSdcard(String packageName, UserHandle user) {
-        ApplicationInfo info = getApplicationInfo(
-                packageName, user, PackageManager.MATCH_UNINSTALLED_PACKAGES);
+        ApplicationInfo info = mLauncherApps.getApplicationInfo(
+                packageName, PackageManager.MATCH_UNINSTALLED_PACKAGES, user);
         return info != null && (info.flags & ApplicationInfo.FLAG_EXTERNAL_STORAGE) != 0;
+    }
+
+    public static boolean isAppEnabled(PackageManager pm, String packageName, int flags) {
+        try {
+            ApplicationInfo info = pm.getApplicationInfo(packageName, flags);
+            return info != null && info.enabled;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    public static boolean isAppInstalled(PackageManager pm, String packageName, int flags) {
+        try {
+            ApplicationInfo info = pm.getApplicationInfo(packageName, flags);
+            return info != null;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    public String getPackageVersion(final String packageName) {
+        try {
+            PackageInfo info = mPm.getPackageInfo(packageName, 0);
+            return info.versionName;
+        } catch (PackageManager.NameNotFoundException ignored) {
+        }
+        return "";
     }
 
     /**
@@ -87,33 +107,12 @@ public class PackageManagerHelper {
      * {@link android.app.admin.DevicePolicyManager#isPackageSuspended}.
      */
     public boolean isAppSuspended(String packageName, UserHandle user) {
-        ApplicationInfo info = getApplicationInfo(packageName, user, 0);
+        ApplicationInfo info = mLauncherApps.getApplicationInfo(packageName, 0, user);
         return info != null && isAppSuspended(info);
     }
 
-    /**
-     * Returns whether the target app is installed for a given user
-     */
-    public boolean isAppInstalled(String packageName, UserHandle user) {
-        ApplicationInfo info = getApplicationInfo(packageName, user, 0);
-        return info != null;
-    }
-
-    /**
-     * Returns the application info for the provided package or null
-     */
-    public ApplicationInfo getApplicationInfo(String packageName, UserHandle user, int flags) {
-        try {
-            ApplicationInfo info = mLauncherApps.getApplicationInfo(packageName, flags, user);
-            return (info.flags & ApplicationInfo.FLAG_INSTALLED) == 0 || !info.enabled
-                    ? null : info;
-        } catch (PackageManager.NameNotFoundException e) {
-            return null;
-        }
-    }
-
     public boolean isSafeMode() {
-        return mPm.isSafeMode();
+        return mContext.getPackageManager().isSafeMode();
     }
 
     public Intent getAppLaunchIntent(String pkg, UserHandle user) {
@@ -127,7 +126,14 @@ public class PackageManagerHelper {
      * {@link android.app.admin.DevicePolicyManager#isPackageSuspended}.
      */
     public static boolean isAppSuspended(ApplicationInfo info) {
-        return (info.flags & ApplicationInfo.FLAG_SUSPENDED) != 0;
+        // The value of FLAG_SUSPENDED was reused by a hidden constant
+        // ApplicationInfo.FLAG_PRIVILEGED prior to N, so only check for suspended flag on N
+        // or later.
+        if (Utilities.ATLEAST_NOUGAT) {
+            return (info.flags & ApplicationInfo.FLAG_SUSPENDED) != 0;
+        } else {
+            return false;
+        }
     }
 
     /**
@@ -154,6 +160,11 @@ public class PackageManagerHelper {
         if(mPm.checkPermission(target.activityInfo.permission, srcPackage) !=
                 PackageManager.PERMISSION_GRANTED) {
             return false;
+        }
+
+        if (!Utilities.ATLEAST_MARSHMALLOW) {
+            // These checks are sufficient for below M devices.
+            return true;
         }
 
         // On M and above also check AppOpsManager for compatibility mode permissions.
@@ -199,34 +210,21 @@ public class PackageManagerHelper {
         }
     }
 
-    public static Intent getStyleWallpapersIntent(Context context) {
-        return new Intent(Intent.ACTION_SET_WALLPAPER).setComponent(
-                new ComponentName(context.getString(R.string.wallpaper_picker_package),
-                "com.android.customization.picker.CustomizationPickerActivity"));
-    }
-
-    public static Intent getStyleWallpapersAltIntent(Context context) {
-        return new Intent(Intent.ACTION_SET_WALLPAPER).setComponent(
-                new ComponentName(context.getString(R.string.wallpaper_picker_package_alt),
-                "com.android.customization.picker.CustomizationPickerActivity"));
-    }
 
     /**
      * Starts the details activity for {@code info}
      */
-    public void startDetailsActivityForInfo(ItemInfo info, Rect sourceBounds, Bundle opts) {
-        if (info instanceof ItemInfoWithIcon
-                && (((ItemInfoWithIcon) info).runtimeStatusFlags
-                    & ItemInfoWithIcon.FLAG_INSTALL_SESSION_ACTIVE) != 0) {
-            ItemInfoWithIcon appInfo = (ItemInfoWithIcon) info;
-            mContext.startActivity(new PackageManagerHelper(mContext)
-                    .getMarketIntent(appInfo.getTargetComponent().getPackageName()));
-            return;
+    public Intent startDetailsActivityForInfo(ItemInfo info, Rect sourceBounds, Bundle opts) {
+        if (info instanceof PromiseAppInfo) {
+            PromiseAppInfo promiseAppInfo = (PromiseAppInfo) info;
+            Intent intent = promiseAppInfo.getMarketIntent(mContext);
+            mContext.startActivity(intent);
+            return intent;
         }
         ComponentName componentName = null;
         if (info instanceof AppInfo) {
             componentName = ((AppInfo) info).componentName;
-        } else if (info instanceof WorkspaceItemInfo) {
+        } else if (info instanceof ShortcutInfo) {
             componentName = info.getTargetComponent();
         } else if (info instanceof PendingAddItemInfo) {
             componentName = ((PendingAddItemInfo) info).componentName;
@@ -235,114 +233,14 @@ public class PackageManagerHelper {
         }
         if (componentName != null) {
             try {
-                mLauncherApps.startAppDetailsActivity(componentName, info.user, sourceBounds, opts);
+                mLauncherApps.showAppDetailsForProfile(
+                        componentName, info.user, sourceBounds, opts);
+                return new Intent(Settings.ACTION_APPLICATION_SETTINGS);
             } catch (SecurityException | ActivityNotFoundException e) {
                 Toast.makeText(mContext, R.string.activity_not_found, Toast.LENGTH_SHORT).show();
                 Log.e(TAG, "Unable to launch settings", e);
             }
         }
-    }
-
-    /**
-     * Creates an intent filter to listen for actions with a specific package in the data field.
-     */
-    public static IntentFilter getPackageFilter(String pkg, String... actions) {
-        IntentFilter packageFilter = new IntentFilter();
-        for (String action : actions) {
-            packageFilter.addAction(action);
-        }
-        packageFilter.addDataScheme("package");
-        packageFilter.addDataSchemeSpecificPart(pkg, PatternMatcher.PATTERN_LITERAL);
-        return packageFilter;
-    }
-
-    public static boolean isSystemApp(Context context, Intent intent) {
-        PackageManager pm = context.getPackageManager();
-        ComponentName cn = intent.getComponent();
-        String packageName = null;
-        if (cn == null) {
-            ResolveInfo info = pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY);
-            if ((info != null) && (info.activityInfo != null)) {
-                packageName = info.activityInfo.packageName;
-            }
-        } else {
-            packageName = cn.getPackageName();
-        }
-        if (packageName == null) {
-            packageName = intent.getPackage();
-        }
-        if (packageName != null) {
-            try {
-                PackageInfo info = pm.getPackageInfo(packageName, 0);
-                return (info != null) && (info.applicationInfo != null) &&
-                        ((info.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
-            } catch (NameNotFoundException e) {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-
-    /**
-     * Finds a system apk which had a broadcast receiver listening to a particular action.
-     * @param action intent action used to find the apk
-     * @return a pair of apk package name and the resources.
-     */
-    public static Pair<String, Resources> findSystemApk(String action, PackageManager pm) {
-        final Intent intent = new Intent(action);
-        for (ResolveInfo info : pm.queryBroadcastReceivers(intent, MATCH_SYSTEM_ONLY)) {
-            final String packageName = info.activityInfo.packageName;
-            try {
-                final Resources res = pm.getResourcesForApplication(packageName);
-                return Pair.create(packageName, res);
-            } catch (NameNotFoundException e) {
-                Log.w(TAG, "Failed to find resources for " + packageName);
-            }
-        }
         return null;
-    }
-
-    /**
-     * Returns true if the intent is a valid launch intent for a launcher activity of an app.
-     * This is used to identify shortcuts which are different from the ones exposed by the
-     * applications' manifest file.
-     *
-     * @param launchIntent The intent that will be launched when the shortcut is clicked.
-     */
-    public static boolean isLauncherAppTarget(Intent launchIntent) {
-        if (launchIntent != null
-                && Intent.ACTION_MAIN.equals(launchIntent.getAction())
-                && launchIntent.getComponent() != null
-                && launchIntent.getCategories() != null
-                && launchIntent.getCategories().size() == 1
-                && launchIntent.hasCategory(Intent.CATEGORY_LAUNCHER)
-                && TextUtils.isEmpty(launchIntent.getDataString())) {
-            // An app target can either have no extra or have ItemInfo.EXTRA_PROFILE.
-            Bundle extras = launchIntent.getExtras();
-            return extras == null || extras.keySet().isEmpty();
-        }
-        return false;
-    }
-
-    /**
-     * Returns true if Launcher has the permission to access shortcuts.
-     * @see LauncherApps#hasShortcutHostPermission()
-     */
-    public static boolean hasShortcutsPermission(Context context) {
-        try {
-            return context.getSystemService(LauncherApps.class).hasShortcutHostPermission();
-        } catch (SecurityException | IllegalStateException e) {
-            Log.e(TAG, "Failed to make shortcut manager call", e);
-        }
-        return false;
-    }
-
-    /** Returns the incremental download progress for the given shortcut's app. */
-    public static int getLoadingProgress(LauncherActivityInfo info) {
-        if (Utilities.ATLEAST_S) {
-            return (int) (100 * info.getLoadingProgress());
-        }
-        return 100;
     }
 }

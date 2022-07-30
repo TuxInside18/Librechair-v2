@@ -17,33 +17,32 @@
 package com.android.launcher3.popup;
 
 import android.content.ComponentName;
+import android.content.Context;
+import android.content.pm.LauncherApps;
 import android.service.notification.StatusBarNotification;
-import android.util.Log;
-
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
-import com.android.launcher3.dot.DotInfo;
+import android.util.Log;
+import ch.deletescape.lawnchair.popup.LawnchairShortcut;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.Launcher;
+import com.android.launcher3.Utilities;
+import com.android.launcher3.badge.BadgeInfo;
 import com.android.launcher3.model.WidgetItem;
-import com.android.launcher3.model.data.ItemInfo;
 import com.android.launcher3.notification.NotificationKeyData;
 import com.android.launcher3.notification.NotificationListener;
+import com.android.launcher3.shortcuts.DeepShortcutManager;
+import com.android.launcher3.shortcuts.DeepShortcutManagerBackport;
+import com.android.launcher3.shortcuts.ShortcutInfoCompat;
 import com.android.launcher3.util.ComponentKey;
+import com.android.launcher3.util.MultiHashMap;
 import com.android.launcher3.util.PackageUserKey;
-import com.android.launcher3.util.ShortcutUtil;
-import com.android.launcher3.widget.model.WidgetsListBaseEntry;
-import com.android.launcher3.widget.model.WidgetsListContentEntry;
-
-import java.io.PrintWriter;
-import java.util.Arrays;
+import com.android.launcher3.widget.WidgetListRowEntry;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.function.Consumer;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 /**
  * Provides data for the popup menu that appears after long-clicking on apps.
@@ -53,134 +52,192 @@ public class PopupDataProvider implements NotificationListener.NotificationsChan
     private static final boolean LOGD = false;
     private static final String TAG = "PopupDataProvider";
 
-    private final Consumer<Predicate<PackageUserKey>> mNotificationDotsChangeListener;
+    /**
+     * Note that these are in order of priority.
+     */
+    private final SystemShortcut[] mSystemShortcuts;
 
-    /** Maps launcher activity components to a count of how many shortcuts they have. */
-    private HashMap<ComponentKey, Integer> mDeepShortcutMap = new HashMap<>();
-    /** Maps packages to their DotInfo's . */
-    private Map<PackageUserKey, DotInfo> mPackageUserToDotInfos = new HashMap<>();
+    private final Launcher mLauncher;
 
-    /** All installed widgets. */
-    private List<WidgetsListBaseEntry> mAllWidgets = List.of();
-    /** Widgets that can be recommended to the users. */
-    private List<ItemInfo> mRecommendedWidgets = List.of();
+    /**
+     * Maps launcher activity components to their list of shortcut ids.
+     */
+    private MultiHashMap<ComponentKey, String> mDeepShortcutMap = new MultiHashMap<>();
+    /**
+     * Maps packages to their BadgeInfo's .
+     */
+    private Map<PackageUserKey, BadgeInfo> mPackageUserToBadgeInfos = new HashMap<>();
+    /**
+     * Maps packages to their Widgets
+     */
+    private ArrayList<WidgetListRowEntry> mAllWidgets = new ArrayList<>();
 
-    private PopupDataChangeListener mChangeListener = PopupDataChangeListener.INSTANCE;
-
-    public PopupDataProvider(Consumer<Predicate<PackageUserKey>> notificationDotsChangeListener) {
-        mNotificationDotsChangeListener = notificationDotsChangeListener;
-    }
-
-    private void updateNotificationDots(Predicate<PackageUserKey> updatedDots) {
-        mNotificationDotsChangeListener.accept(updatedDots);
-        mChangeListener.onNotificationDotsUpdated(updatedDots);
+    public PopupDataProvider(Launcher launcher) {
+        mLauncher = launcher;
+        mSystemShortcuts = new SystemShortcut[]{
+                new SystemShortcut.AppInfo(),
+                new SystemShortcut.Widgets(),
+                new SystemShortcut.Install()
+        };
     }
 
     @Override
     public void onNotificationPosted(PackageUserKey postedPackageUserKey,
-            NotificationKeyData notificationKey) {
-        DotInfo dotInfo = mPackageUserToDotInfos.get(postedPackageUserKey);
-        if (dotInfo == null) {
-            dotInfo = new DotInfo();
-            mPackageUserToDotInfos.put(postedPackageUserKey, dotInfo);
+            NotificationKeyData notificationKey, boolean shouldBeFilteredOut) {
+        BadgeInfo badgeInfo = mPackageUserToBadgeInfos.get(postedPackageUserKey);
+        boolean badgeShouldBeRefreshed;
+        if (badgeInfo == null) {
+            if (!shouldBeFilteredOut) {
+                BadgeInfo newBadgeInfo = new BadgeInfo(postedPackageUserKey);
+                newBadgeInfo.addOrUpdateNotificationKey(notificationKey);
+                mPackageUserToBadgeInfos.put(postedPackageUserKey, newBadgeInfo);
+                badgeShouldBeRefreshed = true;
+            } else {
+                badgeShouldBeRefreshed = false;
+            }
+        } else {
+            badgeShouldBeRefreshed = shouldBeFilteredOut
+                    ? badgeInfo.removeNotificationKey(notificationKey)
+                    : badgeInfo.addOrUpdateNotificationKey(notificationKey);
+            if (badgeInfo.getNotificationKeys().size() == 0) {
+                mPackageUserToBadgeInfos.remove(postedPackageUserKey);
+            }
         }
-        if (dotInfo.addOrUpdateNotificationKey(notificationKey)) {
-            updateNotificationDots(postedPackageUserKey::equals);
+        if (badgeShouldBeRefreshed) {
+            mLauncher.updateIconBadges(Utilities.singletonHashSet(postedPackageUserKey));
         }
     }
 
     @Override
     public void onNotificationRemoved(PackageUserKey removedPackageUserKey,
             NotificationKeyData notificationKey) {
-        DotInfo oldDotInfo = mPackageUserToDotInfos.get(removedPackageUserKey);
-        if (oldDotInfo != null && oldDotInfo.removeNotificationKey(notificationKey)) {
-            if (oldDotInfo.getNotificationKeys().size() == 0) {
-                mPackageUserToDotInfos.remove(removedPackageUserKey);
+        BadgeInfo oldBadgeInfo = mPackageUserToBadgeInfos.get(removedPackageUserKey);
+        if (oldBadgeInfo != null && oldBadgeInfo.removeNotificationKey(notificationKey)) {
+            if (oldBadgeInfo.getNotificationKeys().size() == 0) {
+                mPackageUserToBadgeInfos.remove(removedPackageUserKey);
             }
-            updateNotificationDots(removedPackageUserKey::equals);
-            trimNotifications(mPackageUserToDotInfos);
+            mLauncher.updateIconBadges(Utilities.singletonHashSet(removedPackageUserKey));
+            trimNotifications(mPackageUserToBadgeInfos);
         }
     }
 
     @Override
     public void onNotificationFullRefresh(List<StatusBarNotification> activeNotifications) {
-        if (activeNotifications == null) return;
-        // This will contain the PackageUserKeys which have updated dots.
-        HashMap<PackageUserKey, DotInfo> updatedDots = new HashMap<>(mPackageUserToDotInfos);
-        mPackageUserToDotInfos.clear();
+        if (activeNotifications == null) {
+            return;
+        }
+        // This will contain the PackageUserKeys which have updated badges.
+        HashMap<PackageUserKey, BadgeInfo> updatedBadges = new HashMap<>(mPackageUserToBadgeInfos);
+        mPackageUserToBadgeInfos.clear();
         for (StatusBarNotification notification : activeNotifications) {
             PackageUserKey packageUserKey = PackageUserKey.fromNotification(notification);
-            DotInfo dotInfo = mPackageUserToDotInfos.get(packageUserKey);
-            if (dotInfo == null) {
-                dotInfo = new DotInfo();
-                mPackageUserToDotInfos.put(packageUserKey, dotInfo);
+            BadgeInfo badgeInfo = mPackageUserToBadgeInfos.get(packageUserKey);
+            if (badgeInfo == null) {
+                badgeInfo = new BadgeInfo(packageUserKey);
+                mPackageUserToBadgeInfos.put(packageUserKey, badgeInfo);
             }
-            dotInfo.addOrUpdateNotificationKey(NotificationKeyData.fromNotification(notification));
+            badgeInfo.addOrUpdateNotificationKey(NotificationKeyData
+                    .fromNotification(notification));
         }
 
-        // Add and remove from updatedDots so it contains the PackageUserKeys of updated dots.
-        for (PackageUserKey packageUserKey : mPackageUserToDotInfos.keySet()) {
-            DotInfo prevDot = updatedDots.get(packageUserKey);
-            DotInfo newDot = mPackageUserToDotInfos.get(packageUserKey);
-            if (prevDot == null
-                    || prevDot.getNotificationCount() != newDot.getNotificationCount()) {
-                updatedDots.put(packageUserKey, newDot);
+        // Add and remove from updatedBadges so it contains the PackageUserKeys of updated badges.
+        for (PackageUserKey packageUserKey : mPackageUserToBadgeInfos.keySet()) {
+            BadgeInfo prevBadge = updatedBadges.get(packageUserKey);
+            BadgeInfo newBadge = mPackageUserToBadgeInfos.get(packageUserKey);
+            if (prevBadge == null) {
+                updatedBadges.put(packageUserKey, newBadge);
             } else {
-                // No need to update the dot if it already existed (no visual change).
-                // Note that if the dot was removed entirely, we wouldn't reach this point because
-                // this loop only includes active notifications added above.
-                updatedDots.remove(packageUserKey);
+                if (!prevBadge.shouldBeInvalidated(newBadge)) {
+                    updatedBadges.remove(packageUserKey);
+                }
             }
         }
 
-        if (!updatedDots.isEmpty()) {
-            updateNotificationDots(updatedDots::containsKey);
+        if (!updatedBadges.isEmpty()) {
+            mLauncher.updateIconBadges(updatedBadges.keySet());
         }
-        trimNotifications(updatedDots);
+        trimNotifications(updatedBadges);
     }
 
-    private void trimNotifications(Map<PackageUserKey, DotInfo> updatedDots) {
-        mChangeListener.trimNotifications(updatedDots);
+    private void trimNotifications(Map<PackageUserKey, BadgeInfo> updatedBadges) {
+        PopupContainerWithArrow openContainer = PopupContainerWithArrow.getOpen(mLauncher);
+        if (openContainer != null) {
+            openContainer.trimNotifications(updatedBadges);
+        }
     }
 
-    public void setDeepShortcutMap(HashMap<ComponentKey, Integer> deepShortcutMapCopy) {
+    public void setDeepShortcutMap(MultiHashMap<ComponentKey, String> deepShortcutMapCopy) {
         mDeepShortcutMap = deepShortcutMapCopy;
-        if (LOGD) Log.d(TAG, "bindDeepShortcutMap: " + mDeepShortcutMap);
+        if (LOGD) {
+            Log.d(TAG, "bindDeepShortcutMap: " + mDeepShortcutMap);
+        }
     }
 
-    public int getShortcutCountForItem(ItemInfo info) {
-        if (!ShortcutUtil.supportsDeepShortcuts(info)) {
-            return 0;
+    public List<String> getShortcutIdsForItem(ItemInfo info) {
+        if (!DeepShortcutManager.supportsShortcuts(info)) {
+            return Collections.EMPTY_LIST;
         }
         ComponentName component = info.getTargetComponent();
         if (component == null) {
-            return 0;
+            return Collections.EMPTY_LIST;
         }
-
-        Integer count = mDeepShortcutMap.get(new ComponentKey(component, info.user));
-        return count == null ? 0 : count;
+        List<String> ids = new ArrayList<>();
+        if (!Utilities.ATLEAST_NOUGAT_MR1) {
+            for (ShortcutInfoCompat compat : DeepShortcutManagerBackport.getForPackage(mLauncher,
+                    (LauncherApps) mLauncher.getSystemService(Context.LAUNCHER_APPS_SERVICE),
+                    info.getTargetComponent(),
+                    info.getTargetComponent().getPackageName())) {
+                ids.add(compat.getId());
+            }
+        } else {
+            List<String> tmp = mDeepShortcutMap.get(new ComponentKey(component, info.user));
+            if (tmp != null) {
+                ids.addAll(tmp);
+            }
+            for (ShortcutInfoCompat infoCompat :
+                    DeepShortcutManager.getShadeManager()
+                            .getAll(component.getPackageName(), component)) {
+                ids.add(infoCompat.getId());
+            }
+        }
+        return ids;
     }
 
-    public @Nullable DotInfo getDotInfoForItem(@NonNull ItemInfo info) {
-        if (!ShortcutUtil.supportsShortcuts(info)) {
+    public BadgeInfo getBadgeInfoForItem(ItemInfo info) {
+        if (!DeepShortcutManager.supportsShortcuts(info)) {
             return null;
         }
-        DotInfo dotInfo = mPackageUserToDotInfos.get(PackageUserKey.fromItemInfo(info));
-        if (dotInfo == null) {
-            return null;
-        }
-        List<NotificationKeyData> notifications = getNotificationsForItem(
-                info, dotInfo.getNotificationKeys());
-        if (notifications.isEmpty()) {
-            return null;
-        }
-        return dotInfo;
+
+        return mPackageUserToBadgeInfos.get(PackageUserKey.fromItemInfo(info));
     }
 
-    public @NonNull List<NotificationKeyData> getNotificationKeysForItem(ItemInfo info) {
-        DotInfo dotInfo = getDotInfoForItem(info);
-        return dotInfo == null ? Collections.EMPTY_LIST
-                : getNotificationsForItem(info, dotInfo.getNotificationKeys());
+    public @NonNull
+    List<NotificationKeyData> getNotificationKeysForItem(ItemInfo info) {
+        BadgeInfo badgeInfo = getBadgeInfoForItem(info);
+        return badgeInfo == null ? Collections.EMPTY_LIST : badgeInfo.getNotificationKeys();
+    }
+
+    /**
+     * This makes a potentially expensive binder call and should be run on a background thread.
+     */
+    public @NonNull
+    List<StatusBarNotification> getStatusBarNotificationsForKeys(
+            List<NotificationKeyData> notificationKeys) {
+        NotificationListener notificationListener = NotificationListener.getInstanceIfConnected();
+        return notificationListener == null ? Collections.EMPTY_LIST
+                : notificationListener.getNotificationsForKeys(notificationKeys);
+    }
+
+    public @NonNull
+    List<SystemShortcut> getEnabledSystemShortcutsForItem(ItemInfo info) {
+        List<SystemShortcut> systemShortcuts = new ArrayList<>();
+        for (SystemShortcut systemShortcut :
+                LawnchairShortcut.Companion.getInstance(mLauncher).getEnabledShortcuts()) {
+            if (systemShortcut.getOnClickListener(mLauncher, info) != null) {
+                systemShortcuts.add(systemShortcut);
+            }
+        }
+        return systemShortcuts;
     }
 
     public void cancelNotification(String notificationKey) {
@@ -191,90 +248,28 @@ public class PopupDataProvider implements NotificationListener.NotificationsChan
         notificationListener.cancelNotificationFromLauncher(notificationKey);
     }
 
-    /**
-     * Sets a list of recommended widgets ordered by their order of appearance in the widgets
-     * recommendation UI.
-     */
-    public void setRecommendedWidgets(List<ItemInfo> recommendedWidgets) {
-        mRecommendedWidgets = recommendedWidgets;
-        mChangeListener.onRecommendedWidgetsBound();
-    }
-
-    public void setAllWidgets(List<WidgetsListBaseEntry> allWidgets) {
+    public void setAllWidgets(ArrayList<WidgetListRowEntry> allWidgets) {
         mAllWidgets = allWidgets;
-        mChangeListener.onWidgetsBound();
     }
 
-    public void setChangeListener(PopupDataChangeListener listener) {
-        mChangeListener = listener == null ? PopupDataChangeListener.INSTANCE : listener;
-    }
-
-    public List<WidgetsListBaseEntry> getAllWidgets() {
+    public ArrayList<WidgetListRowEntry> getAllWidgets() {
         return mAllWidgets;
     }
 
-    /** Returns a list of recommended widgets. */
-    public List<WidgetItem> getRecommendedWidgets() {
-        HashMap<ComponentKey, WidgetItem> allWidgetItems = new HashMap<>();
-        mAllWidgets.stream()
-                .filter(entry -> entry instanceof WidgetsListContentEntry)
-                .forEach(entry -> ((WidgetsListContentEntry) entry).mWidgets
-                        .forEach(widget -> allWidgetItems.put(
-                                new ComponentKey(widget.componentName, widget.user), widget)));
-        return mRecommendedWidgets.stream()
-                .map(recommendedWidget -> allWidgetItems.get(
-                        new ComponentKey(recommendedWidget.getTargetComponent(),
-                                recommendedWidget.user)))
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
-    }
-
     public List<WidgetItem> getWidgetsForPackageUser(PackageUserKey packageUserKey) {
-        return mAllWidgets.stream()
-                .filter(row -> row instanceof WidgetsListContentEntry
-                        && row.mPkgItem.packageName.equals(packageUserKey.mPackageName))
-                .flatMap(row -> ((WidgetsListContentEntry) row).mWidgets.stream())
-                .filter(widget -> packageUserKey.mUser.equals(widget.user))
-                .collect(Collectors.toList());
-    }
-
-    /**
-     * Returns a list of notifications that are relevant to given ItemInfo.
-     */
-    public static @NonNull List<NotificationKeyData> getNotificationsForItem(
-            @NonNull ItemInfo info, @NonNull List<NotificationKeyData> notifications) {
-        String shortcutId = ShortcutUtil.getShortcutIdIfPinnedShortcut(info);
-        if (shortcutId == null) {
-            return notifications;
+        for (WidgetListRowEntry entry : mAllWidgets) {
+            if (entry.pkgItem.packageName.equals(packageUserKey.mPackageName)) {
+                ArrayList<WidgetItem> widgets = new ArrayList<>(entry.widgets);
+                // Remove widgets not associated with the correct user.
+                Iterator<WidgetItem> iterator = widgets.iterator();
+                while (iterator.hasNext()) {
+                    if (!iterator.next().user.equals(packageUserKey.mUser)) {
+                        iterator.remove();
+                    }
+                }
+                return widgets.isEmpty() ? null : widgets;
+            }
         }
-        String[] personKeys = ShortcutUtil.getPersonKeysIfPinnedShortcut(info);
-        return notifications.stream().filter((NotificationKeyData notification) -> {
-                    if (notification.shortcutId != null) {
-                        return notification.shortcutId.equals(shortcutId);
-                    }
-                    if (notification.personKeysFromNotification.length != 0) {
-                        return Arrays.equals(notification.personKeysFromNotification, personKeys);
-                    }
-                    return false;
-                }).collect(Collectors.toList());
-    }
-
-    public void dump(String prefix, PrintWriter writer) {
-        writer.println(prefix + "PopupDataProvider:");
-        writer.println(prefix + "\tmPackageUserToDotInfos:" + mPackageUserToDotInfos);
-    }
-
-    public interface PopupDataChangeListener {
-
-        PopupDataChangeListener INSTANCE = new PopupDataChangeListener() { };
-
-        default void onNotificationDotsUpdated(Predicate<PackageUserKey> updatedDots) { }
-
-        default void trimNotifications(Map<PackageUserKey, DotInfo> updatedDots) { }
-
-        default void onWidgetsBound() { }
-
-        /** A callback to get notified when recommended widgets are bound. */
-        default void onRecommendedWidgetsBound() { }
+        return null;
     }
 }

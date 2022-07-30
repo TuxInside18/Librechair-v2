@@ -15,27 +15,19 @@
  */
 package com.android.launcher3.model;
 
-import static androidx.test.InstrumentationRegistry.getContext;
-
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertNotSame;
 import static junit.framework.Assert.assertTrue;
 
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
-
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.res.Resources;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
-
-import androidx.test.ext.junit.runners.AndroidJUnit4;
-import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.filters.SmallTest;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import com.android.launcher3.LauncherProvider;
 import com.android.launcher3.LauncherProvider.DatabaseHelper;
@@ -64,49 +56,35 @@ public class DbDowngradeHelperTest {
 
     @Before
     public void setup() {
-        mContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        mContext = InstrumentationRegistry.getTargetContext();
         mSchemaFile = mContext.getFileStreamPath(SCHEMA_FILE);
         mDbFile = mContext.getDatabasePath(DB_FILE);
     }
 
     @Test
-    public void testDowngradeSchemaMatchesVersion() throws Exception {
-        mSchemaFile.delete();
-        assertFalse(mSchemaFile.exists());
-        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 0, mContext);
-        assertEquals(LauncherProvider.SCHEMA_VERSION, DbDowngradeHelper.parse(mSchemaFile).version);
-    }
-
-    @Test
     public void testUpdateSchemaFile() throws Exception {
-        // Setup mock resources
-        Resources res = spy(mContext.getResources());
-        Resources myRes = getContext().getResources();
-        doAnswer(i -> myRes.openRawResource(
-                myRes.getIdentifier("db_schema_v10", "raw", getContext().getPackageName())))
-                .when(res).openRawResource(R.raw.downgrade_schema);
-        Context context = spy(mContext);
-        when(context.getResources()).thenReturn(res);
-
+        Context myContext = InstrumentationRegistry.getContext();
+        int testResId = myContext.getResources().getIdentifier(
+                "db_schema_v10", "raw", myContext.getPackageName());
         mSchemaFile.delete();
         assertFalse(mSchemaFile.exists());
 
-        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 10, context);
+        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 10, myContext, testResId);
         assertTrue(mSchemaFile.exists());
         assertEquals(10, DbDowngradeHelper.parse(mSchemaFile).version);
 
         // Schema is updated on version upgrade
         assertTrue(mSchemaFile.setLastModified(0));
-        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 11, context);
+        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 11, myContext, testResId);
         assertNotSame(0, mSchemaFile.lastModified());
 
         // Schema is not updated when version is same
         assertTrue(mSchemaFile.setLastModified(0));
-        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 10, context);
+        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 10, myContext, testResId);
         assertEquals(0, mSchemaFile.lastModified());
 
         // Schema is not updated on version downgrade
-        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 3, context);
+        DbDowngradeHelper.updateSchemaFile(mSchemaFile, 3, myContext, testResId);
         assertEquals(0, mSchemaFile.lastModified());
     }
 
@@ -136,7 +114,7 @@ public class DbDowngradeHelperTest {
         }
         helper.close();
 
-        helper = new DatabaseHelper(mContext, DB_FILE, false) {
+        helper = new DatabaseHelper(mContext, null, DB_FILE) {
             @Override
             public void onOpen(SQLiteDatabase db) { }
         };
@@ -165,13 +143,14 @@ public class DbDowngradeHelperTest {
         mSchemaFile.delete();
         mDbFile.delete();
 
-        DbDowngradeHelper.updateSchemaFile(mSchemaFile, LauncherProvider.SCHEMA_VERSION, mContext);
+        DbDowngradeHelper.updateSchemaFile(mSchemaFile, LauncherProvider.SCHEMA_VERSION, mContext,
+                R.raw.downgrade_schema);
 
-        DatabaseHelper dbHelper = new DatabaseHelper(mContext, DB_FILE, false) {
+        DatabaseHelper dbHelper = new DatabaseHelper(mContext, null, DB_FILE) {
             @Override
             public void onOpen(SQLiteDatabase db) { }
         };
-        // Insert mock data
+        // Insert dummy data
         for (int i = 0; i < 10; i++) {
             ContentValues values = new ContentValues();
             values.put(Favorites._ID, i);

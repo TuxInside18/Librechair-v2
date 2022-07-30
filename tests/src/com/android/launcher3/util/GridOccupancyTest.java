@@ -1,14 +1,14 @@
 package com.android.launcher3.util;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
-import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Unit tests for {@link GridOccupancy}
@@ -24,7 +24,7 @@ public class GridOccupancyTest {
                 0, 0, 1, 1, 0,
                 0, 0, 0, 0, 0,
                 1, 1, 0, 0, 0
-        );
+                );
 
         int[] vacant = new int[2];
         assertTrue(grid.findVacantCell(vacant, 2, 2));

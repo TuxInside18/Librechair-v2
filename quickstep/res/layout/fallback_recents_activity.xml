@@ -13,43 +13,19 @@
      See the License for the specific language governing permissions and
      limitations under the License.
 -->
-<com.android.launcher3.LauncherRootView
+<com.android.quickstep.fallback.RecentsRootView
     xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/drag_layer"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:fitsSystemWindows="true">
 
-    <com.android.quickstep.views.SplitPlaceholderView
-        android:id="@+id/split_placeholder"
-        android:layout_width="match_parent"
-        android:layout_height="@dimen/split_placeholder_size"
-        android:background="@android:color/white"
-        android:alpha=".8"
-        android:visibility="gone" />
-
-    <com.android.quickstep.fallback.RecentsDragLayer
-        android:id="@+id/drag_layer"
+    <com.android.quickstep.fallback.FallbackRecentsView
+        android:id="@id/overview_panel"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:clipChildren="false">
-
-        <app.lawnchair.views.LawnchairScrimView
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:id="@+id/scrim_view"
-            android:background="@android:color/transparent" />
-
-        <com.android.quickstep.fallback.FallbackRecentsView
-            android:id="@id/overview_panel"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipChildren="false"
-            android:clipToPadding="false"
-            android:outlineProvider="none" />
-
-        <include
-            android:id="@+id/overview_actions_view"
-            layout="@layout/overview_actions_container" />
-
-    </com.android.quickstep.fallback.RecentsDragLayer>
-</com.android.launcher3.LauncherRootView>
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:outlineProvider="none"
+        android:theme="@style/HomeScreenElementTheme" />
+</com.android.quickstep.fallback.RecentsRootView>

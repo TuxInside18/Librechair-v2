@@ -25,21 +25,15 @@ import android.animation.TimeInterpolator;
 import android.content.Context;
 import android.graphics.Rect;
 import android.util.AttributeSet;
-import android.util.Log;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewDebug;
 import android.view.ViewPropertyAnimator;
 import android.widget.FrameLayout;
-
-import androidx.annotation.NonNull;
-
 import com.android.launcher3.anim.Interpolators;
 import com.android.launcher3.dragndrop.DragController;
 import com.android.launcher3.dragndrop.DragController.DragListener;
 import com.android.launcher3.dragndrop.DragOptions;
-import com.android.launcher3.testing.TestProtocol;
 
 /*
  * The top bar containing various drop targets: Delete/App Info/Uninstall.
@@ -102,15 +96,14 @@ public class DropTargetBar extends FrameLayout
         } else {
             int gap;
             if (grid.isTablet) {
-                // XXX: If the icon size changes across orientations, we will have to take
+                // XXX: If the iconView size changes across orientations, we will have to take
                 //      that into account here too.
                 gap = ((grid.widthPx - 2 * grid.edgeMarginPx
                         - (grid.inv.numColumns * grid.cellWidthPx))
                         / (2 * (grid.inv.numColumns + 1)))
                         + grid.edgeMarginPx;
             } else {
-                gap = getContext().getResources()
-                        .getDimensionPixelSize(R.dimen.drop_target_bar_margin_horizontal);
+                gap = grid.desiredWorkspaceLeftRightMarginPx - grid.defaultWidgetPadding.right;
             }
             lp.width = grid.availableWidthPx - 2 * gap;
 
@@ -120,7 +113,6 @@ public class DropTargetBar extends FrameLayout
         }
         setLayoutParams(lp);
         for (ButtonDropTarget button : mDropTargets) {
-            button.setTextSize(TypedValue.COMPLEX_UNIT_PX, grid.dropTargetTextSizePx);
             button.setToolTipLocation(tooltipLocation);
         }
     }
@@ -138,10 +130,7 @@ public class DropTargetBar extends FrameLayout
         int width = MeasureSpec.getSize(widthMeasureSpec);
         int height = MeasureSpec.getSize(heightMeasureSpec);
 
-        int visibleCount = getVisibleButtonsCount();
-        if (visibleCount == 0) {
-            // do nothing
-        } else if (mIsVertical) {
+        if (mIsVertical) {
             int widthSpec = MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY);
             int heightSpec = MeasureSpec.makeMeasureSpec(height, MeasureSpec.AT_MOST);
 
@@ -152,6 +141,7 @@ public class DropTargetBar extends FrameLayout
                 }
             }
         } else {
+            int visibleCount = getVisibleButtonsCount();
             int availableWidth = width / visibleCount;
             boolean textVisible = true;
             for (ButtonDropTarget buttons : mDropTargets) {
@@ -174,10 +164,7 @@ public class DropTargetBar extends FrameLayout
 
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-        int visibleCount = getVisibleButtonsCount();
-        if (visibleCount == 0) {
-            // do nothing
-        } else if (mIsVertical) {
+        if (mIsVertical) {
             int gap = getResources().getDimensionPixelSize(R.dimen.drop_target_vertical_gap);
             int start = gap;
             int end;
@@ -190,6 +177,7 @@ public class DropTargetBar extends FrameLayout
                 }
             }
         } else {
+            int visibleCount = getVisibleButtonsCount();
             int frameSize = (right - left) / visibleCount;
 
             int start = frameSize / 2;
@@ -215,10 +203,7 @@ public class DropTargetBar extends FrameLayout
         return visibleCount;
     }
 
-    public void animateToVisibility(boolean isVisible) {
-        if (TestProtocol.sDebugTracing) {
-            Log.d(TestProtocol.NO_DROP_TARGET, "8");
-        }
+    private void animateToVisibility(boolean isVisible) {
         if (mVisible != isVisible) {
             mVisible = isVisible;
 
@@ -245,9 +230,6 @@ public class DropTargetBar extends FrameLayout
      */
     @Override
     public void onDragStart(DropTarget.DragObject dragObject, DragOptions options) {
-        if (TestProtocol.sDebugTracing) {
-            Log.d(TestProtocol.NO_DROP_TARGET, "7");
-        }
         animateToVisibility(true);
     }
 
@@ -270,17 +252,5 @@ public class DropTargetBar extends FrameLayout
 
     public ButtonDropTarget[] getDropTargets() {
         return mDropTargets;
-    }
-
-    @Override
-    protected void onVisibilityChanged(@NonNull View changedView, int visibility) {
-        super.onVisibilityChanged(changedView, visibility);
-        if (TestProtocol.sDebugTracing) {
-            if (visibility == VISIBLE) {
-                Log.d(TestProtocol.NO_DROP_TARGET, "9");
-            } else {
-                Log.d(TestProtocol.NO_DROP_TARGET, "Hiding drop target", new Exception());
-            }
-        }
     }
 }

@@ -1,14 +1,19 @@
 package com.android.launcher3.widget;
 
 import android.appwidget.AppWidgetHostView;
+import android.appwidget.AppWidgetManager;
 import android.content.Context;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
 import android.util.Log;
 import android.view.View;
 
+import com.android.launcher3.AppWidgetResizeFrame;
 import com.android.launcher3.DropTarget;
 import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAppWidgetProviderInfo;
+import com.android.launcher3.compat.AppWidgetManagerCompat;
 import com.android.launcher3.dragndrop.DragController;
 import com.android.launcher3.dragndrop.DragLayer;
 import com.android.launcher3.dragndrop.DragOptions;
@@ -83,7 +88,7 @@ public class WidgetHostViewLoader implements DragController.DragListener {
         if (pInfo.isCustomWidget()) {
             return false;
         }
-        final Bundle options = mInfo.getDefaultSizeOptions(mLauncher);
+        final Bundle options = getDefaultOptionsForWidget(mLauncher, mInfo);
 
         // If there is a configuration activity, do not follow thru bound and inflate.
         if (mInfo.getHandler().needsConfigure()) {
@@ -94,15 +99,19 @@ public class WidgetHostViewLoader implements DragController.DragListener {
         mBindWidgetRunnable = new Runnable() {
             @Override
             public void run() {
-                mWidgetLoadingId = mLauncher.getAppWidgetHost().allocateAppWidgetId();
-                if (LOGD) {
-                    Log.d(TAG, "Binding widget, id: " + mWidgetLoadingId);
-                }
-                if (new WidgetManagerHelper(mLauncher).bindAppWidgetIdIfAllowed(
-                        mWidgetLoadingId, pInfo, options)) {
+                try {
+                    mWidgetLoadingId = mLauncher.getAppWidgetHost().allocateAppWidgetId();
+                    if (LOGD) {
+                        Log.d(TAG, "Binding widget, id: " + mWidgetLoadingId);
+                    }
+                    if (AppWidgetManagerCompat.getInstance(mLauncher).bindAppWidgetIdIfAllowed(
+                            mWidgetLoadingId, pInfo, options)) {
 
-                    // Widget id bound. Inflate the widget.
-                    mHandler.post(mInflateWidgetRunnable);
+                        // Widget id bound. Inflate the widget.
+                        mHandler.post(mInflateWidgetRunnable);
+                    }
+                } catch(NullPointerException e){
+                    Log.e(TAG, "mBindWidgetRunnable: ", e);
                 }
             }
         };
@@ -135,8 +144,6 @@ public class WidgetHostViewLoader implements DragController.DragListener {
                 if (LOGD) {
                     Log.d(TAG, "Adding host view to drag layer");
                 }
-                mLauncher.getDragLayer().addView(hostView);
-                mView.setTag(mInfo);
             }
         };
 
@@ -147,4 +154,25 @@ public class WidgetHostViewLoader implements DragController.DragListener {
         return true;
     }
 
+    public static Bundle getDefaultOptionsForWidget(Context context, PendingAddWidgetInfo info) {
+        Rect rect = new Rect();
+        AppWidgetResizeFrame.getWidgetSizeRanges(context, info.spanX, info.spanY, rect);
+        Rect padding = AppWidgetHostView.getDefaultPaddingForWidget(context,
+                info.componentName, null);
+
+        float density = context.getResources().getDisplayMetrics().density;
+        int xPaddingDips = (int) ((padding.left + padding.right) / density);
+        int yPaddingDips = (int) ((padding.top + padding.bottom) / density);
+
+        Bundle options = new Bundle();
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH,
+                rect.left - xPaddingDips);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT,
+                rect.top - yPaddingDips);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH,
+                rect.right - xPaddingDips);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT,
+                rect.bottom - yPaddingDips);
+        return options;
+    }
 }

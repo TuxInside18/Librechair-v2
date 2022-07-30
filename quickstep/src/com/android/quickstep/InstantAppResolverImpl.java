@@ -19,10 +19,15 @@ package com.android.quickstep;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.InstantAppInfo;
 import android.content.pm.PackageManager;
+import android.util.Log;
 
-import com.android.launcher3.model.data.AppInfo;
+import com.android.launcher3.AppInfo;
 import com.android.launcher3.util.InstantAppResolver;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Implementation of InstantAppResolver using platform APIs
@@ -35,18 +40,43 @@ public class InstantAppResolverImpl extends InstantAppResolver {
 
     private final PackageManager mPM;
 
-    public InstantAppResolverImpl(Context context) {
+    public InstantAppResolverImpl(Context context)
+            throws NoSuchMethodException, ClassNotFoundException {
         mPM = context.getPackageManager();
     }
 
     @Override
     public boolean isInstantApp(ApplicationInfo info) {
-        return info.isInstantApp();
+        try {
+            return info.isInstantApp();
+        } catch (NoSuchMethodError e) {
+            return super.isInstantApp(info);
+        }
     }
 
     @Override
     public boolean isInstantApp(AppInfo info) {
         ComponentName cn = info.getTargetComponent();
         return cn != null && cn.getClassName().equals(COMPONENT_CLASS_MARKER);
+    }
+
+    @Override
+    public List<ApplicationInfo> getInstantApps() {
+        try {
+            List<ApplicationInfo> result = new ArrayList<>();
+            for (InstantAppInfo iai : mPM.getInstantApps()) {
+                ApplicationInfo info = iai.getApplicationInfo();
+                if (info != null) {
+                    result.add(info);
+                }
+            }
+            return result;
+        } catch (SecurityException se) {
+            Log.w(TAG, "getInstantApps failed. Launcher may not be the default home app.", se);
+        } catch (Exception e) {
+            Log.e(TAG, "Error calling API: getInstantApps", e);
+        } catch (NoSuchMethodError e) {
+        }
+        return super.getInstantApps();
     }
 }

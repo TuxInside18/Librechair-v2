@@ -16,64 +16,45 @@
 
 package com.android.launcher3;
 
-import static com.android.launcher3.logging.StatsLogManager.LauncherEvent.LAUNCHER_APP_LAUNCH_TAP;
-import static com.android.launcher3.util.DisplayController.CHANGE_ROTATION;
-
 import android.app.ActivityOptions;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
-import android.content.pm.LauncherApps;
 import android.content.res.Configuration;
-import android.graphics.Insets;
-import android.graphics.Point;
 import android.graphics.Rect;
-import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.Process;
 import android.os.StrictMode;
 import android.os.UserHandle;
+import androidx.annotation.NonNull;
 import android.util.Log;
 import android.view.ActionMode;
-import android.view.Display;
 import android.view.View;
-import android.view.WindowInsets.Type;
-import android.view.WindowMetrics;
 import android.widget.Toast;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
 import com.android.launcher3.LauncherSettings.Favorites;
-import com.android.launcher3.allapps.AllAppsContainerView;
-import com.android.launcher3.allapps.search.DefaultSearchAdapterProvider;
-import com.android.launcher3.allapps.search.SearchAdapterProvider;
-import com.android.launcher3.logging.InstanceId;
-import com.android.launcher3.logging.InstanceIdSequence;
-import com.android.launcher3.logging.StatsLogManager;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.WorkspaceItemInfo;
-import com.android.launcher3.touch.ItemClickHandler;
-import com.android.launcher3.util.ActivityOptionsWrapper;
-import com.android.launcher3.util.DisplayController;
-import com.android.launcher3.util.DisplayController.DisplayInfoChangeListener;
-import com.android.launcher3.util.DisplayController.Info;
-import com.android.launcher3.util.PackageManagerHelper;
-import com.android.launcher3.util.RunnableList;
-import com.android.launcher3.util.Themes;
-import com.android.launcher3.util.TraceHelper;
-import com.android.launcher3.util.WindowBounds;
+import com.android.launcher3.badge.BadgeInfo;
+import com.android.launcher3.compat.LauncherAppsCompat;
+import com.android.launcher3.shortcuts.DeepShortcutManager;
+import com.android.launcher3.uioverrides.DisplayRotationListener;
+import com.android.launcher3.uioverrides.WallpaperColorInfo;
+import com.android.launcher3.views.BaseDragLayer;
 
-import app.lawnchair.wallpaper.WallpaperManagerCompat;
+import ch.deletescape.lawnchair.theme.ThemeOverride;
+import ch.deletescape.lawnchair.theme.ThemeOverride.ThemeSet;
 
 /**
  * Extension of BaseActivity allowing support for drag-n-drop
  */
-@SuppressWarnings("NewApi")
 public abstract class BaseDraggingActivity extends BaseActivity
-        implements WallpaperManagerCompat.OnColorsChangedListener, DisplayInfoChangeListener {
+        implements WallpaperColorInfo.OnChangeListener {
 
     private static final String TAG = "BaseDraggingActivity";
+
+    // The Intent extra that defines whether to ignore the launch animation
+    public static final String INTENT_EXTRA_IGNORE_LAUNCH_ANIMATION =
+            "com.android.launcher3.intent.extra.shortcut.INGORE_LAUNCH_ANIMATION";
 
     // When starting an action mode, setting this tag will cause the action mode to be cancelled
     // automatically when user interacts with the launcher.
@@ -82,40 +63,30 @@ public abstract class BaseDraggingActivity extends BaseActivity
     private ActionMode mCurrentActionMode;
     protected boolean mIsSafeModeEnabled;
 
-    private Runnable mOnStartCallback;
-    private RunnableList mOnResumeCallbacks = new RunnableList();
+    private OnStartCallback mOnStartCallback;
 
     private int mThemeRes = R.style.AppTheme;
+
+    private DisplayRotationListener mRotationListener;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        mIsSafeModeEnabled = getPackageManager().isSafeMode();
+        mRotationListener = DisplayRotationListener.create(this, this::onDeviceRotationChanged);
 
-        mIsSafeModeEnabled = TraceHelper.allowIpcs("isSafeMode",
-                () -> getPackageManager().isSafeMode());
-        DisplayController.INSTANCE.get(this).addChangeListener(this);
+        // Register theme override
+        ThemeOverride themeOverride = new ThemeOverride(getLauncherThemeSet(), this);
+        themeOverride.applyTheme(this);
+    }
 
-        // Update theme
-        WallpaperManagerCompat.INSTANCE.get(this).addOnChangeListener(this);
-        int themeRes = Themes.getActivityThemeRes(this);
-        if (themeRes != mThemeRes) {
-            mThemeRes = themeRes;
-            setTheme(themeRes);
-        }
+    @NonNull
+    protected ThemeSet getLauncherThemeSet() {
+        return new ThemeOverride.Launcher();
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        mOnResumeCallbacks.executeAllAndClear();
-    }
-
-    public void addOnResumeCallback(Runnable callback) {
-        mOnResumeCallbacks.add(callback);
-    }
-
-    @Override
-    public void onColorsChanged() {
+    public void onExtractedColorsChanged(WallpaperColorInfo wallpaperColorInfo) {
         updateTheme();
     }
 
@@ -125,9 +96,29 @@ public abstract class BaseDraggingActivity extends BaseActivity
         updateTheme();
     }
 
-    protected void updateTheme() {
-        if (mThemeRes != Themes.getActivityThemeRes(this)) {
+    private void updateTheme() {
+        WallpaperColorInfo wallpaperColorInfo = WallpaperColorInfo.getInstance(this);
+        if (mThemeRes != getThemeRes(wallpaperColorInfo)) {
             recreate();
+        }
+    }
+
+    protected int getThemeRes(WallpaperColorInfo wallpaperColorInfo) {
+        boolean darkTheme;
+        if (Utilities.ATLEAST_Q) {
+            Configuration configuration = getResources().getConfiguration();
+            int nightMode = configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK;
+            darkTheme = nightMode == Configuration.UI_MODE_NIGHT_YES;
+        } else {
+            darkTheme = wallpaperColorInfo.isDark();
+        }
+
+        if (darkTheme) {
+            return wallpaperColorInfo.supportsDarkText() ?
+                    R.style.AppTheme_Dark_DarkText : R.style.AppTheme_Dark;
+        } else {
+            return wallpaperColorInfo.supportsDarkText() ?
+                    R.style.AppTheme_DarkText : R.style.AppTheme;
         }
     }
 
@@ -143,7 +134,6 @@ public abstract class BaseDraggingActivity extends BaseActivity
         mCurrentActionMode = null;
     }
 
-    @Override
     public boolean finishAutoCancelActionMode() {
         if (mCurrentActionMode != null && AUTO_CANCEL_ACTION_MODE == mCurrentActionMode.getTag()) {
             mCurrentActionMode.finish();
@@ -152,55 +142,63 @@ public abstract class BaseDraggingActivity extends BaseActivity
         return false;
     }
 
+    public abstract BaseDragLayer getDragLayer();
+
     public abstract <T extends View> T getOverviewPanel();
 
     public abstract View getRootView();
 
-    public void returnToHomescreen() {
-        // no-op
-    }
+    public abstract BadgeInfo getBadgeInfoForItem(ItemInfo info);
 
-    @NonNull
-    public ActivityOptionsWrapper getActivityLaunchOptions(View v, @Nullable ItemInfo item) {
-        int left = 0, top = 0;
-        int width = v.getMeasuredWidth(), height = v.getMeasuredHeight();
-        if (v instanceof BubbleTextView) {
-            // Launch from center of icon, not entire view
-            Drawable icon = ((BubbleTextView) v).getIcon();
-            if (icon != null) {
-                Rect bounds = icon.getBounds();
-                left = (width - bounds.width()) / 2;
-                top = v.getPaddingTop();
-                width = bounds.width();
-                height = bounds.height();
-            }
+    public abstract void invalidateParent(ItemInfo info);
+
+    public static BaseDraggingActivity fromContext(Context context) {
+        if (context instanceof BaseDraggingActivity) {
+            return (BaseDraggingActivity) context;
         }
-        ActivityOptions options =
-                ActivityOptions.makeClipRevealAnimation(v, left, top, width, height);
-        RunnableList callback = new RunnableList();
-        addOnResumeCallback(callback::executeAllAndDestroy);
-        return new ActivityOptionsWrapper(options, callback);
+        return ((BaseDraggingActivity) ((ContextWrapper) context).getBaseContext());
     }
 
-    public boolean startActivitySafely(View v, Intent intent, @Nullable ItemInfo item) {
-        if (mIsSafeModeEnabled && !PackageManagerHelper.isSystemApp(this, intent)) {
+    public Rect getViewBounds(View v) {
+        int[] pos = new int[2];
+        v.getLocationOnScreen(pos);
+        return new Rect(pos[0], pos[1], pos[0] + v.getWidth(), pos[1] + v.getHeight());
+    }
+
+    public final Bundle getActivityLaunchOptionsAsBundle(View v) {
+        ActivityOptions activityOptions = getActivityLaunchOptions(v);
+        return activityOptions == null ? null : activityOptions.toBundle();
+    }
+
+    public abstract ActivityOptions getActivityLaunchOptions(View v);
+
+    public boolean startActivitySafely(View v, Intent intent, ItemInfo item) {
+        if (mIsSafeModeEnabled && !Utilities.isSystemApp(this, intent)) {
             Toast.makeText(this, R.string.safemode_shortcut_error, Toast.LENGTH_SHORT).show();
             return false;
         }
 
-        Bundle optsBundle = (v != null) ? getActivityLaunchOptions(v, item).toBundle() : null;
+        // Only launch using the new animation if the shortcut has not opted out (this is a
+        // private contract between launcher and may be ignored in the future).
+        boolean useLaunchAnimation = (v != null) &&
+                !intent.hasExtra(INTENT_EXTRA_IGNORE_LAUNCH_ANIMATION);
+        Bundle optsBundle = useLaunchAnimation
+                ? getActivityLaunchOptionsAsBundle(v)
+                : null;
+
         UserHandle user = item == null ? null : item.user;
 
         // Prepare intent
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         if (v != null) {
-            intent.setSourceBounds(Utilities.getViewBounds(v));
+            intent.setSourceBounds(getViewBounds(v));
         }
         try {
-            boolean isShortcut = (item instanceof WorkspaceItemInfo)
+            boolean isShortcut = Utilities.ATLEAST_MARSHMALLOW
+                    && (item instanceof ShortcutInfo)
                     && (item.itemType == Favorites.ITEM_TYPE_SHORTCUT
                     || item.itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT)
-                    && !((WorkspaceItemInfo) item).isPromise();
+                    && !((ShortcutInfo) item).isPromise();
             if (isShortcut) {
                 // Shortcuts need some special checks due to legacy reasons.
                 startShortcutIntentSafely(intent, optsBundle, item);
@@ -208,28 +206,16 @@ public abstract class BaseDraggingActivity extends BaseActivity
                 // Could be launching some bookkeeping activity
                 startActivity(intent, optsBundle);
             } else {
-                getSystemService(LauncherApps.class).startMainActivity(
+                LauncherAppsCompat.getInstance(this).startActivityForProfile(
                         intent.getComponent(), user, intent.getSourceBounds(), optsBundle);
             }
-            if (item != null) {
-                InstanceId instanceId = new InstanceIdSequence().newInstanceId();
-                logAppLaunch(getStatsLogManager(), item, instanceId);
-            }
+            getUserEventDispatcher().logAppLaunch(v, intent, user);
             return true;
-        } catch (NullPointerException | ActivityNotFoundException | SecurityException e) {
+        } catch (ActivityNotFoundException | SecurityException e) {
             Toast.makeText(this, R.string.activity_not_found, Toast.LENGTH_SHORT).show();
             Log.e(TAG, "Unable to launch. tag=" + item + " intent=" + intent, e);
         }
         return false;
-    }
-
-    /**
-     * Creates and logs a new app launch event.
-     */
-    public void logAppLaunch(StatsLogManager statsLogManager, ItemInfo info,
-            InstanceId instanceId) {
-        statsLogManager.logger().withItemInfo(info).withInstanceId(instanceId)
-                .log(LAUNCHER_APP_LAUNCH_TAP);
     }
 
     private void startShortcutIntentSafely(Intent intent, Bundle optsBundle, ItemInfo info) {
@@ -243,15 +229,17 @@ public abstract class BaseDraggingActivity extends BaseActivity
                         .penaltyLog().build());
 
                 if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_DEEP_SHORTCUT) {
-                    String id = ((WorkspaceItemInfo) info).getDeepShortcutId();
+                    String id = ((ShortcutInfo) info).getDeepShortcutId();
                     String packageName = intent.getPackage();
-                    startShortcut(packageName, id, intent.getSourceBounds(), optsBundle, info.user);
+                    DeepShortcutManager.getInstance(this).startShortcut(
+                            packageName, id, intent, optsBundle, info.user);
                 } else {
                     // Could be launching some bookkeeping activity
                     startActivity(intent, optsBundle);
                 }
             } finally {
                 StrictMode.setVmPolicy(oldPolicy);
+                getUserEventDispatcher().logShortcutLaunch(intent, info);
             }
         } catch (SecurityException e) {
             if (!onErrorStartingShortcut(intent, info)) {
@@ -269,7 +257,7 @@ public abstract class BaseDraggingActivity extends BaseActivity
         super.onStart();
 
         if (mOnStartCallback != null) {
-            mOnStartCallback.run();
+            mOnStartCallback.onActivityStart(this);
             mOnStartCallback = null;
         }
     }
@@ -277,59 +265,35 @@ public abstract class BaseDraggingActivity extends BaseActivity
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        WallpaperManagerCompat.INSTANCE.get(this).removeOnChangeListener(this);
-        DisplayController.INSTANCE.get(this).removeChangeListener(this);
+        mRotationListener.disable();
     }
 
-    public void runOnceOnStart(Runnable action) {
-        mOnStartCallback = action;
-    }
-
-    public void clearRunOnceOnStartCallback() {
-        mOnStartCallback = null;
+    public <T extends BaseDraggingActivity> void setOnStartCallback(OnStartCallback<T> callback) {
+        mOnStartCallback = callback;
     }
 
     protected void onDeviceProfileInitiated() {
         if (mDeviceProfile.isVerticalBarLayout()) {
-            mDeviceProfile.updateIsSeascape(this);
+            mRotationListener.enable();
+            mDeviceProfile.updateIsSeascape(getWindowManager());
+        } else {
+            mRotationListener.disable();
         }
     }
 
-    @Override
-    public void onDisplayInfoChanged(Context context, Info info, int flags) {
-        if ((flags & CHANGE_ROTATION) != 0 && mDeviceProfile.updateIsSeascape(this)) {
+    private void onDeviceRotationChanged() {
+        if (mDeviceProfile.updateIsSeascape(getWindowManager())) {
             reapplyUi();
         }
     }
 
-    @Override
-    public View.OnClickListener getItemOnClickListener() {
-        return ItemClickHandler.INSTANCE;
-    }
-
     protected abstract void reapplyUi();
 
-    protected WindowBounds getMultiWindowDisplaySize() {
-        if (Utilities.ATLEAST_R) {
-            WindowMetrics wm = getWindowManager().getCurrentWindowMetrics();
-
-            Insets insets = wm.getWindowInsets().getInsets(Type.systemBars());
-            return new WindowBounds(wm.getBounds(),
-                    new Rect(insets.left, insets.top, insets.right, insets.bottom));
-        }
-        // Note: Calls to getSize() can't rely on our cached DefaultDisplay since it can return
-        // the app window size
-        Display display = getWindowManager().getDefaultDisplay();
-        Point mwSize = new Point();
-        display.getSize(mwSize);
-        return new WindowBounds(new Rect(0, 0, mwSize.x, mwSize.y), new Rect());
-    }
-
     /**
-     * Creates and returns {@link SearchAdapterProvider} for build variant specific search result
-     * views
+     * Callback for listening for onStart
      */
-    public SearchAdapterProvider createSearchAdapterProvider(AllAppsContainerView allapps) {
-        return new DefaultSearchAdapterProvider(this, allapps);
+    public interface OnStartCallback<T extends BaseDraggingActivity> {
+
+        void onActivityStart(T activity);
     }
 }

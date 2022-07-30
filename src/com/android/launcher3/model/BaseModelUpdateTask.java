@@ -15,27 +15,21 @@
  */
 package com.android.launcher3.model;
 
+import android.os.UserHandle;
 import android.util.Log;
-
+import com.android.launcher3.AllAppsList;
 import com.android.launcher3.LauncherAppState;
 import com.android.launcher3.LauncherModel;
 import com.android.launcher3.LauncherModel.CallbackTask;
+import com.android.launcher3.LauncherModel.Callbacks;
 import com.android.launcher3.LauncherModel.ModelUpdateTask;
-import com.android.launcher3.model.BgDataModel.Callbacks;
-import com.android.launcher3.model.BgDataModel.FixedContainerItems;
-import com.android.launcher3.model.data.AppInfo;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.WorkspaceItemInfo;
+import com.android.launcher3.ShortcutInfo;
 import com.android.launcher3.util.ComponentKey;
 import com.android.launcher3.util.ItemInfoMatcher;
-import com.android.launcher3.widget.model.WidgetsListBaseEntry;
-
+import com.android.launcher3.util.MultiHashMap;
+import com.android.launcher3.widget.WidgetListRowEntry;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.Executor;
-import java.util.stream.Collectors;
 
 /**
  * Extension of {@link ModelUpdateTask} with some utility methods
@@ -82,64 +76,64 @@ public abstract class BaseModelUpdateTask implements ModelUpdateTask {
      * Schedules a {@param task} to be executed on the current callbacks.
      */
     public final void scheduleCallbackTask(final CallbackTask task) {
-        for (final Callbacks cb : mModel.getCallbacks()) {
-            mUiExecutor.execute(() -> task.execute(cb));
-        }
+        final Callbacks callbacks = mModel.getCallback();
+        mUiExecutor.execute(() -> {
+            Callbacks cb = mModel.getCallback();
+            if (callbacks == cb && cb != null) {
+                task.execute(callbacks);
+            }
+        });
     }
 
     public ModelWriter getModelWriter() {
-        // Updates from model task, do not deal with icon position in hotseat. Also no need to
+        // Updates from model task, do not deal with iconView position in hotseat. Also no need to
         // verify changes as the ModelTasks always push the changes to callbacks
-        return mModel.getWriter(false /* hasVerticalHotseat */, false /* verifyChanges */, null);
+        return mModel.getWriter(false /* hasVerticalHotseat */, false /* verifyChanges */);
     }
 
-    public void bindUpdatedWorkspaceItems(List<WorkspaceItemInfo> allUpdates) {
-        // Bind workspace items
-        List<WorkspaceItemInfo> workspaceUpdates = allUpdates.stream()
-                .filter(info -> info.id != ItemInfo.NO_ID)
-                .collect(Collectors.toList());
-        if (!workspaceUpdates.isEmpty()) {
-            scheduleCallbackTask(c -> c.bindWorkspaceItemsChanged(workspaceUpdates));
+
+    public void bindUpdatedShortcuts(
+            final ArrayList<ShortcutInfo> updatedShortcuts, final UserHandle user) {
+        if (!updatedShortcuts.isEmpty()) {
+            scheduleCallbackTask(new CallbackTask() {
+                @Override
+                public void execute(Callbacks callbacks) {
+                    callbacks.bindShortcutsChanged(updatedShortcuts, user);
+                }
+            });
         }
-
-        // Bind extra items if any
-        allUpdates.stream()
-                .mapToInt(info -> info.container)
-                .distinct()
-                .mapToObj(mDataModel.extraItems::get)
-                .filter(Objects::nonNull)
-                .forEach(this::bindExtraContainerItems);
-    }
-
-    public void bindExtraContainerItems(FixedContainerItems item) {
-        FixedContainerItems copy = item.clone();
-        scheduleCallbackTask(c -> c.bindExtraContainerItems(copy));
     }
 
     public void bindDeepShortcuts(BgDataModel dataModel) {
-        final HashMap<ComponentKey, Integer> shortcutMapCopy =
-                new HashMap<>(dataModel.deepShortcutMap);
-        scheduleCallbackTask(callbacks -> callbacks.bindDeepShortcutMap(shortcutMapCopy));
+        final MultiHashMap<ComponentKey, String> shortcutMapCopy = dataModel.deepShortcutMap.clone();
+        scheduleCallbackTask(new CallbackTask() {
+            @Override
+            public void execute(Callbacks callbacks) {
+                callbacks.bindDeepShortcutMap(shortcutMapCopy);
+            }
+        });
     }
 
     public void bindUpdatedWidgets(BgDataModel dataModel) {
-        final ArrayList<WidgetsListBaseEntry> widgets =
-                dataModel.widgetsModel.getWidgetsListForPicker(mApp.getContext());
-        scheduleCallbackTask(c -> c.bindAllWidgets(widgets));
+        final ArrayList<WidgetListRowEntry> widgets =
+                dataModel.widgetsModel.getWidgetsList(mApp.getContext());
+        scheduleCallbackTask(new CallbackTask() {
+            @Override
+            public void execute(Callbacks callbacks) {
+                callbacks.bindAllWidgets(widgets);
+            }
+        });
     }
 
     public void deleteAndBindComponentsRemoved(final ItemInfoMatcher matcher) {
         getModelWriter().deleteItemsFromDatabase(matcher);
 
         // Call the components-removed callback
-        scheduleCallbackTask(c -> c.bindWorkspaceComponentsRemoved(matcher));
-    }
-
-    public void bindApplicationsIfNeeded() {
-        if (mAllAppsList.getAndResetChangeFlag()) {
-            AppInfo[] apps = mAllAppsList.copyData();
-            int flags = mAllAppsList.getFlags();
-            scheduleCallbackTask(c -> c.bindAllApplications(apps, flags));
-        }
+        scheduleCallbackTask(new CallbackTask() {
+            @Override
+            public void execute(Callbacks callbacks) {
+                callbacks.bindWorkspaceComponentsRemoved(matcher);
+            }
+        });
     }
 }

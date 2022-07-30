@@ -16,46 +16,33 @@
 
 package com.android.launcher3;
 
-import static androidx.dynamicanimation.animation.DynamicAnimation.MIN_VISIBLE_CHANGE_SCALE;
-
+import static ch.deletescape.lawnchair.views.LawnchairBackgroundView.ALPHA_INDEX_STATE;
+import static com.android.launcher3.LauncherAnimUtils.DRAWABLE_ALPHA;
 import static com.android.launcher3.LauncherAnimUtils.SCALE_PROPERTY;
-import static com.android.launcher3.LauncherAnimUtils.VIEW_ALPHA;
-import static com.android.launcher3.LauncherAnimUtils.VIEW_TRANSLATE_X;
-import static com.android.launcher3.LauncherAnimUtils.VIEW_TRANSLATE_Y;
-import static com.android.launcher3.LauncherState.FLAG_HAS_SYS_UI_SCRIM;
-import static com.android.launcher3.LauncherState.HINT_STATE;
 import static com.android.launcher3.LauncherState.HOTSEAT_ICONS;
-import static com.android.launcher3.LauncherState.NORMAL;
-import static com.android.launcher3.LauncherState.WORKSPACE_PAGE_INDICATOR;
-import static com.android.launcher3.anim.Interpolators.ACCEL_2;
+import static com.android.launcher3.LauncherState.HOTSEAT_SEARCH_BOX;
+import static com.android.launcher3.LauncherState.OPTIONS_VIEW;
+import static com.android.launcher3.anim.AnimatorSetBuilder.ANIM_BLUR_FADE;
+import static com.android.launcher3.anim.AnimatorSetBuilder.ANIM_WORKSPACE_FADE;
+import static com.android.launcher3.anim.AnimatorSetBuilder.ANIM_WORKSPACE_SCALE;
 import static com.android.launcher3.anim.Interpolators.LINEAR;
 import static com.android.launcher3.anim.Interpolators.ZOOM_OUT;
 import static com.android.launcher3.anim.PropertySetter.NO_ANIM_PROPERTY_SETTER;
-import static com.android.launcher3.graphics.Scrim.SCRIM_PROGRESS;
-import static com.android.launcher3.graphics.SysUiScrim.SYSUI_PROGRESS;
-import static com.android.launcher3.states.StateAnimationConfig.ANIM_HOTSEAT_SCALE;
-import static com.android.launcher3.states.StateAnimationConfig.ANIM_HOTSEAT_TRANSLATE;
-import static com.android.launcher3.states.StateAnimationConfig.ANIM_SCRIM_FADE;
-import static com.android.launcher3.states.StateAnimationConfig.ANIM_WORKSPACE_FADE;
-import static com.android.launcher3.states.StateAnimationConfig.ANIM_WORKSPACE_SCALE;
-import static com.android.launcher3.states.StateAnimationConfig.ANIM_WORKSPACE_TRANSLATE;
-import static com.android.launcher3.states.StateAnimationConfig.SKIP_SCRIM;
+import static com.android.launcher3.graphics.WorkspaceAndHotseatScrim.SCRIM_PROGRESS;
+import static com.android.launcher3.graphics.WorkspaceAndHotseatScrim.SYSUI_PROGRESS;
 
-import android.animation.ValueAnimator;
 import android.view.View;
 import android.view.animation.Interpolator;
-
+import ch.deletescape.lawnchair.LawnchairLauncher;
+import ch.deletescape.lawnchair.util.InvertedMultiValueAlpha;
+import ch.deletescape.lawnchair.util.InvertedMultiValueAlpha.InvertedAlphaProperty;
+import ch.deletescape.lawnchair.views.LawnchairBackgroundView;
+import ch.deletescape.lawnchair.views.OptionsPanel;
 import com.android.launcher3.LauncherState.PageAlphaProvider;
-import com.android.launcher3.LauncherState.ScaleAndTranslation;
-import com.android.launcher3.anim.PendingAnimation;
+import com.android.launcher3.LauncherStateManager.AnimationConfig;
+import com.android.launcher3.anim.AnimatorSetBuilder;
 import com.android.launcher3.anim.PropertySetter;
-import com.android.launcher3.anim.SpringAnimationBuilder;
-import com.android.launcher3.graphics.Scrim;
-import com.android.launcher3.graphics.SysUiScrim;
-import com.android.launcher3.states.SpringLoadedState;
-import com.android.launcher3.states.StateAnimationConfig;
-import com.android.launcher3.util.DynamicResource;
-import com.android.systemui.plugins.ResourceProvider;
+import com.android.launcher3.graphics.WorkspaceAndHotseatScrim;
 
 /**
  * Manages the animations between each of the workspace states.
@@ -73,15 +60,13 @@ public class WorkspaceStateTransitionAnimation {
     }
 
     public void setState(LauncherState toState) {
-        setWorkspaceProperty(toState, NO_ANIM_PROPERTY_SETTER, new StateAnimationConfig());
+        setWorkspaceProperty(toState, NO_ANIM_PROPERTY_SETTER, new AnimatorSetBuilder(),
+                new AnimationConfig());
     }
 
-    /**
-     * @see com.android.launcher3.statemanager.StateManager.StateHandler#setStateWithAnimation
-     */
-    public void setStateWithAnimation(
-            LauncherState toState, StateAnimationConfig config, PendingAnimation animation) {
-        setWorkspaceProperty(toState, animation, config);
+    public void setStateWithAnimation(LauncherState toState, AnimatorSetBuilder builder,
+            AnimationConfig config) {
+        setWorkspaceProperty(toState, config.getPropertySetter(builder), builder, config);
     }
 
     public float getFinalScale() {
@@ -92,122 +77,81 @@ public class WorkspaceStateTransitionAnimation {
      * Starts a transition animation for the workspace.
      */
     private void setWorkspaceProperty(LauncherState state, PropertySetter propertySetter,
-            StateAnimationConfig config) {
-        ScaleAndTranslation scaleAndTranslation = state.getWorkspaceScaleAndTranslation(mLauncher);
-        ScaleAndTranslation hotseatScaleAndTranslation = state.getHotseatScaleAndTranslation(
-                mLauncher);
-        mNewScale = scaleAndTranslation.scale;
+            AnimatorSetBuilder builder, AnimationConfig config) {
+        float[] scaleAndTranslation = state.getWorkspaceScaleAndTranslation(mLauncher);
+        mNewScale = scaleAndTranslation[0];
         PageAlphaProvider pageAlphaProvider = state.getWorkspacePageAlphaProvider(mLauncher);
         final int childCount = mWorkspace.getChildCount();
         for (int i = 0; i < childCount; i++) {
             applyChildState(state, (CellLayout) mWorkspace.getChildAt(i), i, pageAlphaProvider,
-                    propertySetter, config);
+                    propertySetter, builder, config);
         }
 
         int elements = state.getVisibleElements(mLauncher);
-        Interpolator fadeInterpolator = config.getInterpolator(ANIM_WORKSPACE_FADE,
+        Interpolator fadeInterpolator = builder.getInterpolator(ANIM_WORKSPACE_FADE,
                 pageAlphaProvider.interpolator);
-        Hotseat hotseat = mWorkspace.getHotseat();
-        Interpolator scaleInterpolator = config.getInterpolator(ANIM_WORKSPACE_SCALE, ZOOM_OUT);
-        LauncherState fromState = mLauncher.getStateManager().getState();
-
-        boolean shouldSpring = propertySetter instanceof PendingAnimation
-                && fromState == HINT_STATE && state == NORMAL;
-        if (shouldSpring) {
-            ((PendingAnimation) propertySetter).add(getSpringScaleAnimator(mLauncher,
-                    mWorkspace, mNewScale));
-        } else {
+        boolean playAtomicComponent = config.playAtomicComponent();
+        if (playAtomicComponent) {
+            Interpolator scaleInterpolator = builder.getInterpolator(ANIM_WORKSPACE_SCALE, ZOOM_OUT);
             propertySetter.setFloat(mWorkspace, SCALE_PROPERTY, mNewScale, scaleInterpolator);
+            float hotseatIconsAlpha = (elements & HOTSEAT_ICONS) != 0 ? 1 : 0;
+            propertySetter.setViewAlpha(mLauncher.getHotseat().getLayout(), hotseatIconsAlpha,
+                    fadeInterpolator);
+            propertySetter.setViewAlpha(mLauncher.getWorkspace().getPageIndicator(),
+                    hotseatIconsAlpha, fadeInterpolator);
         }
 
-        mWorkspace.setPivotToScaleWithSelf(hotseat);
-        float hotseatScale = hotseatScaleAndTranslation.scale;
-        if (shouldSpring) {
-            PendingAnimation pa = (PendingAnimation) propertySetter;
-            pa.add(getSpringScaleAnimator(mLauncher, hotseat, hotseatScale));
-        } else {
-            Interpolator hotseatScaleInterpolator = config.getInterpolator(ANIM_HOTSEAT_SCALE,
-                    scaleInterpolator);
-            propertySetter.setFloat(hotseat, SCALE_PROPERTY, hotseatScale,
-                    hotseatScaleInterpolator);
+        // Set options view
+        OptionsPanel optionsPanel = LawnchairLauncher.getLauncher(mLauncher).getOptionsView();
+        propertySetter.setViewAlpha(optionsPanel, (elements & OPTIONS_VIEW) != 0 ? 1 : 0, fadeInterpolator);
+
+        if (!config.playNonAtomicComponent()) {
+            // Only the alpha and scale, handled above, are included in the atomic animation.
+            return;
         }
 
-        float hotseatIconsAlpha = (elements & HOTSEAT_ICONS) != 0 ? 1 : 0;
-        propertySetter.setViewAlpha(hotseat, hotseatIconsAlpha, fadeInterpolator);
-        float workspacePageIndicatorAlpha = (elements & WORKSPACE_PAGE_INDICATOR) != 0 ? 1 : 0;
-        propertySetter.setViewAlpha(mLauncher.getWorkspace().getPageIndicator(),
-                workspacePageIndicatorAlpha, fadeInterpolator);
+        Interpolator translationInterpolator = !playAtomicComponent ? LINEAR : ZOOM_OUT;
+        propertySetter.setFloat(mWorkspace, View.TRANSLATION_X,
+                scaleAndTranslation[1], translationInterpolator);
+        propertySetter.setFloat(mWorkspace, View.TRANSLATION_Y,
+                scaleAndTranslation[2], translationInterpolator);
 
-        Interpolator translationInterpolator =
-                config.getInterpolator(ANIM_WORKSPACE_TRANSLATE, ZOOM_OUT);
-        propertySetter.setFloat(mWorkspace, VIEW_TRANSLATE_X,
-                scaleAndTranslation.translationX, translationInterpolator);
-        propertySetter.setFloat(mWorkspace, VIEW_TRANSLATE_Y,
-                scaleAndTranslation.translationY, translationInterpolator);
+        propertySetter.setViewAlpha(mLauncher.getHotseatSearchBox(),
+                (elements & HOTSEAT_SEARCH_BOX) != 0 ? 1 : 0, fadeInterpolator);
 
-        Interpolator hotseatTranslationInterpolator = config.getInterpolator(
-                ANIM_HOTSEAT_TRANSLATE, translationInterpolator);
-        propertySetter.setFloat(hotseat, VIEW_TRANSLATE_Y,
-                hotseatScaleAndTranslation.translationY, hotseatTranslationInterpolator);
-        propertySetter.setFloat(mWorkspace.getPageIndicator(), VIEW_TRANSLATE_Y,
-                hotseatScaleAndTranslation.translationY, hotseatTranslationInterpolator);
+        // Set scrim
+        WorkspaceAndHotseatScrim scrim = mLauncher.getDragLayer().getScrim();
+        propertySetter.setFloat(scrim, SCRIM_PROGRESS, state.getWorkspaceScrimAlpha(mLauncher),
+                LINEAR);
+        propertySetter.setFloat(scrim, SYSUI_PROGRESS, state.hasSysUiScrim ? 1 : 0, LINEAR);
 
-        if (!config.hasAnimationFlag(SKIP_SCRIM)) {
-            setScrim(propertySetter, state, config);
-        }
-    }
-
-    public void setScrim(PropertySetter propertySetter, LauncherState state,
-            StateAnimationConfig config) {
-        Scrim workspaceDragScrim = mLauncher.getDragLayer().getWorkspaceDragScrim();
-        propertySetter.setFloat(workspaceDragScrim, SCRIM_PROGRESS,
-                state.getWorkspaceBackgroundAlpha(mLauncher), LINEAR);
-
-        SysUiScrim sysUiScrim = mLauncher.getRootView().getSysUiScrim();
-        propertySetter.setFloat(sysUiScrim, SYSUI_PROGRESS,
-                state.hasFlag(FLAG_HAS_SYS_UI_SCRIM) ? 1 : 0, LINEAR);
-
-        propertySetter.setViewBackgroundColor(mLauncher.getScrimView(),
-                state.getWorkspaceScrimColor(mLauncher),
-                config.getInterpolator(ANIM_SCRIM_FADE, ACCEL_2));
+        LawnchairBackgroundView background = LawnchairLauncher.getLauncher(mLauncher).getBackground();
+        propertySetter.setFloat(background.getBlurAlphas().getProperty(ALPHA_INDEX_STATE),
+                InvertedMultiValueAlpha.VALUE,
+                state.getWorkspaceBlurAlpha(mLauncher),
+                builder.getInterpolator(ANIM_BLUR_FADE, LINEAR));
     }
 
     public void applyChildState(LauncherState state, CellLayout cl, int childIndex) {
         applyChildState(state, cl, childIndex, state.getWorkspacePageAlphaProvider(mLauncher),
-                NO_ANIM_PROPERTY_SETTER, new StateAnimationConfig());
+                NO_ANIM_PROPERTY_SETTER, new AnimatorSetBuilder(), new AnimationConfig());
     }
 
     private void applyChildState(LauncherState state, CellLayout cl, int childIndex,
             PageAlphaProvider pageAlphaProvider, PropertySetter propertySetter,
-            StateAnimationConfig config) {
+            AnimatorSetBuilder builder, AnimationConfig config) {
         float pageAlpha = pageAlphaProvider.getPageAlpha(childIndex);
-        float springLoadedProgress = (state instanceof SpringLoadedState) ? 1.0f : 0f;
+        int drawableAlpha = Math.round(pageAlpha * (state.hasWorkspacePageBackground ? 255 : 0));
 
-        propertySetter.setFloat(cl,
-                CellLayout.SPRING_LOADED_PROGRESS, springLoadedProgress, ZOOM_OUT);
-        Interpolator fadeInterpolator = config.getInterpolator(ANIM_WORKSPACE_FADE,
-                pageAlphaProvider.interpolator);
-        propertySetter.setFloat(cl.getShortcutsAndWidgets(), VIEW_ALPHA,
-                pageAlpha, fadeInterpolator);
-    }
-
-    /**
-     * Returns a spring based animator for the scale property of {@param v}.
-     */
-    public static ValueAnimator getSpringScaleAnimator(Launcher launcher, View v, float scale) {
-        ResourceProvider rp = DynamicResource.provider(launcher);
-        float damping = rp.getFloat(R.dimen.hint_scale_damping_ratio);
-        float stiffness = rp.getFloat(R.dimen.hint_scale_stiffness);
-        float velocityPxPerS = rp.getDimension(R.dimen.hint_scale_velocity_dp_per_s);
-
-        return new SpringAnimationBuilder(v.getContext())
-                .setStiffness(stiffness)
-                .setDampingRatio(damping)
-                .setMinimumVisibleChange(MIN_VISIBLE_CHANGE_SCALE)
-                .setEndValue(scale)
-                .setStartValue(SCALE_PROPERTY.get(v))
-                .setStartVelocity(velocityPxPerS)
-                .build(v, SCALE_PROPERTY);
-
+        if (config.playNonAtomicComponent()) {
+            propertySetter.setInt(cl.getScrimBackground(),
+                    DRAWABLE_ALPHA, drawableAlpha, ZOOM_OUT);
+        }
+        if (config.playAtomicComponent()) {
+            Interpolator fadeInterpolator = builder.getInterpolator(ANIM_WORKSPACE_FADE,
+                    pageAlphaProvider.interpolator);
+            propertySetter.setFloat(cl.getShortcutsAndWidgets(), View.ALPHA,
+                    pageAlpha, fadeInterpolator);
+        }
     }
 }

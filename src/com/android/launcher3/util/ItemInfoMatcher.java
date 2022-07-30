@@ -18,99 +18,140 @@ package com.android.launcher3.util;
 
 import android.content.ComponentName;
 import android.os.UserHandle;
+import android.util.SparseLongArray;
 
+import com.android.launcher3.FolderInfo;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.LauncherAppWidgetInfo;
 import com.android.launcher3.LauncherSettings.Favorites;
-import com.android.launcher3.model.data.FolderInfo;
-import com.android.launcher3.model.data.ItemInfo;
+import com.android.launcher3.ShortcutInfo;
 import com.android.launcher3.shortcuts.ShortcutKey;
 
-import java.util.Collection;
 import java.util.HashSet;
-import java.util.Set;
 
 /**
  * A utility class to check for {@link ItemInfo}
  */
-public interface ItemInfoMatcher {
+public abstract class ItemInfoMatcher {
+
+    public abstract boolean matches(ItemInfo info, ComponentName cn);
 
     /**
-     * Empty component used for match testing
+     * Filters {@param infos} to those satisfying the {@link #matches(ItemInfo, ComponentName)}.
      */
-    ComponentName EMPTY_COMPONENT = new ComponentName("", "");
-
-    boolean matches(ItemInfo info, ComponentName cn);
-
-    /**
-     * Returns true if the itemInfo matches this check
-     */
-    default boolean matchesInfo(ItemInfo info) {
-        if (info != null) {
-            ComponentName cn = info.getTargetComponent();
-            return matches(info, cn != null ? cn : EMPTY_COMPONENT);
-        } else {
-            return false;
+    public final HashSet<ItemInfo> filterItemInfos(Iterable<ItemInfo> infos) {
+        HashSet<ItemInfo> filtered = new HashSet<>();
+        for (ItemInfo i : infos) {
+            if (i instanceof ShortcutInfo) {
+                ShortcutInfo info = (ShortcutInfo) i;
+                ComponentName cn = info.getTargetComponent();
+                if (cn != null && matches(info, cn)) {
+                    filtered.add(info);
+                }
+            } else if (i instanceof FolderInfo) {
+                FolderInfo info = (FolderInfo) i;
+                for (ShortcutInfo s : info.contents) {
+                    ComponentName cn = s.getTargetComponent();
+                    if (cn != null && matches(s, cn)) {
+                        filtered.add(s);
+                    }
+                }
+            } else if (i instanceof LauncherAppWidgetInfo) {
+                LauncherAppWidgetInfo info = (LauncherAppWidgetInfo) i;
+                ComponentName cn = info.providerName;
+                if (cn != null && matches(info, cn)) {
+                    filtered.add(info);
+                }
+            }
         }
+        return filtered;
     }
 
     /**
      * Returns a new matcher with returns true if either this or {@param matcher} returns true.
      */
-    default ItemInfoMatcher or(ItemInfoMatcher matcher) {
-        return (info, cn) -> matches(info, cn) || matcher.matches(info, cn);
+    public ItemInfoMatcher or(final ItemInfoMatcher matcher) {
+       final ItemInfoMatcher that = this;
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return that.matches(info, cn) || matcher.matches(info, cn);
+            }
+        };
     }
 
     /**
      * Returns a new matcher with returns true if both this and {@param matcher} returns true.
      */
-    default ItemInfoMatcher and(ItemInfoMatcher matcher) {
-        return (info, cn) -> matches(info, cn) && matcher.matches(info, cn);
+    public ItemInfoMatcher and(final ItemInfoMatcher matcher) {
+        final ItemInfoMatcher that = this;
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return that.matches(info, cn) && matcher.matches(info, cn);
+            }
+        };
     }
 
     /**
-     * Returns a new matcher with returns the opposite value of this.
+     * Returns a new matcher which returns the opposite boolean value of the provided
+     * {@param matcher}.
      */
-    default ItemInfoMatcher negate() {
-        return (info, cn) -> !matches(info, cn);
+    public static ItemInfoMatcher not(final ItemInfoMatcher matcher) {
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return !matcher.matches(info, cn);
+            }
+        };
     }
 
-    static ItemInfoMatcher ofUser(UserHandle user) {
-        return (info, cn) -> info.user.equals(user);
+    public static ItemInfoMatcher ofUser(final UserHandle user) {
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return info.user.equals(user);
+            }
+        };
     }
 
-    static ItemInfoMatcher ofComponents(HashSet<ComponentName> components, UserHandle user) {
-        return (info, cn) -> components.contains(cn) && info.user.equals(user);
+    public static ItemInfoMatcher ofComponents(
+            final HashSet<ComponentName> components, final UserHandle user) {
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return components.contains(cn) && info.user.equals(user);
+            }
+        };
     }
 
-    static ItemInfoMatcher ofPackages(Set<String> packageNames, UserHandle user) {
-        return (info, cn) -> packageNames.contains(cn.getPackageName()) && info.user.equals(user);
+    public static ItemInfoMatcher ofPackages(
+            final HashSet<String> packageNames, final UserHandle user) {
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return packageNames.contains(cn.getPackageName()) && info.user.equals(user);
+            }
+        };
     }
 
-    static ItemInfoMatcher ofShortcutKeys(Set<ShortcutKey> keys) {
-        return (info, cn) -> info.itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT
-                && keys.contains(ShortcutKey.fromItemInfo(info));
+    public static ItemInfoMatcher ofShortcutKeys(final HashSet<ShortcutKey> keys) {
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return info.itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT &&
+                        keys.contains(ShortcutKey.fromItemInfo(info));
+            }
+        };
     }
 
-    /**
-     * Returns a matcher for items within folders.
-     */
-    static ItemInfoMatcher forFolderMatch(ItemInfoMatcher childOperator) {
-        return (info, cn) -> info instanceof FolderInfo && ((FolderInfo) info).contents.stream()
-                .anyMatch(childOperator::matchesInfo);
-    }
-
-    /**
-     * Returns a matcher for items with provided ids
-     */
-    static ItemInfoMatcher ofItemIds(IntSet ids) {
-        return (info, cn) -> ids.contains(info.id);
-    }
-
-    /**
-     * Returns a matcher for items with provided items
-     */
-    static ItemInfoMatcher ofItems(Collection<? extends ItemInfo> items) {
-        IntSet ids = new IntSet();
-        items.forEach(item -> ids.add(item.id));
-        return ofItemIds(ids);
+    public static ItemInfoMatcher ofItemIds(
+            final LongArrayMap<Boolean> ids, final Boolean matchDefault) {
+        return new ItemInfoMatcher() {
+            @Override
+            public boolean matches(ItemInfo info, ComponentName cn) {
+                return ids.get(info.id, matchDefault);
+            }
+        };
     }
 }

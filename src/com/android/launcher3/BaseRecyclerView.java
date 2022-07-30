@@ -17,17 +17,17 @@
 package com.android.launcher3;
 
 import android.content.Context;
+import androidx.recyclerview.widget.RecyclerView;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityNodeInfo;
 
-import androidx.recyclerview.widget.LinearLayoutManager;
-import androidx.recyclerview.widget.RecyclerView;
-
-import com.android.launcher3.compat.AccessibilityManagerCompat;
+import ch.deletescape.lawnchair.colors.ColorEngine;
+import ch.deletescape.lawnchair.colors.ColorEngine.OnColorChangeListener;
+import ch.deletescape.lawnchair.colors.ColorEngine.ResolveInfo;
 import com.android.launcher3.views.RecyclerViewFastScroller;
+import org.jetbrains.annotations.NotNull;
 
 
 /**
@@ -37,7 +37,7 @@ import com.android.launcher3.views.RecyclerViewFastScroller;
  *   <li> Enable fast scroller.
  * </ul>
  */
-public abstract class BaseRecyclerView extends RecyclerView  {
+public abstract class BaseRecyclerView extends RecyclerView implements OnColorChangeListener {
 
     protected RecyclerViewFastScroller mScrollbar;
 
@@ -57,10 +57,27 @@ public abstract class BaseRecyclerView extends RecyclerView  {
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         bindFastScrollbar();
+        ColorEngine.getInstance(getContext())
+                .addColorChangeListeners(this, ColorEngine.Resolvers.ACCENT);
+    }
+
+    @Override
+    public void onColorChange(@NotNull ResolveInfo resolveInfo) {
+        if (resolveInfo.getKey().equals(ColorEngine.Resolvers.ACCENT)) {
+            mScrollbar.setColor(resolveInfo.getColor(), resolveInfo.getForegroundColor());
+        }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        ColorEngine.getInstance(getContext())
+                .removeColorChangeListeners(this, ColorEngine.Resolvers.ACCENT);
     }
 
     public void bindFastScrollbar() {
         ViewGroup parent = (ViewGroup) getParent().getParent();
+        if (parent == null) return;
         mScrollbar = parent.findViewById(R.id.fast_scroller);
         mScrollbar.setRecyclerView(this, parent.findViewById(R.id.fast_scroller_popup));
         onUpdateScrollbar(0);
@@ -126,12 +143,12 @@ public abstract class BaseRecyclerView extends RecyclerView  {
      * @param ev MotionEvent in {@param eventSource}
      */
     public boolean shouldContainerScroll(MotionEvent ev, View eventSource) {
-        float[] point = new float[2];
-        point[0] = ev.getX();
-        point[1] = ev.getY();
+        int[] point = new int[2];
+        point[0] = (int) ev.getX();
+        point[1] = (int) ev.getY();
         Utilities.mapCoordInSelfToDescendant(mScrollbar, eventSource, point);
         // IF the MotionEvent is inside the thumb, container should not be pulled down.
-        if (mScrollbar.shouldBlockIntercept((int) point[0], (int) point[1])) {
+        if (mScrollbar.shouldBlockIntercept(point[0], point[1])) {
             return false;
         }
 
@@ -140,7 +157,7 @@ public abstract class BaseRecyclerView extends RecyclerView  {
         if (getCurrentScrollY() == 0) {
             return true;
         }
-        return getAdapter() == null || getAdapter().getItemCount() == 0;
+        return false;
     }
 
     /**
@@ -162,7 +179,7 @@ public abstract class BaseRecyclerView extends RecyclerView  {
      * Maps the touch (from 0..1) to the adapter position that should be visible.
      * <p>Override in each subclass of this base class.
      */
-    public abstract String scrollToPositionAtProgress(float touchFraction);
+    public abstract PositionThumbInfo scrollToPositionAtProgress(float touchFraction);
 
     /**
      * Updates the bounds for the scrollbar.
@@ -175,35 +192,13 @@ public abstract class BaseRecyclerView extends RecyclerView  {
      */
     public void onFastScrollCompleted() {}
 
-    @Override
-    public void onScrollStateChanged(int state) {
-        super.onScrollStateChanged(state);
+    public class PositionThumbInfo {
+        public String name;
+        public int color;
 
-        if (state == SCROLL_STATE_IDLE) {
-            AccessibilityManagerCompat.sendScrollFinishedEventToTest(getContext());
+        public PositionThumbInfo(String name, int color) {
+            this.name = name;
+            this.color = color;
         }
-    }
-
-    @Override
-    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
-        super.onInitializeAccessibilityNodeInfo(info);
-        if (isLayoutSuppressed()) info.setScrollable(false);
-    }
-
-    /**
-     * Scrolls this recycler view to the top.
-     */
-    public void scrollToTop() {
-        if (mScrollbar != null) {
-            mScrollbar.reattachThumbToScroll();
-        }
-        if (getLayoutManager() instanceof LinearLayoutManager) {
-            LinearLayoutManager layoutManager = (LinearLayoutManager) getLayoutManager();
-            if (layoutManager.findFirstCompletelyVisibleItemPosition() == 0) {
-                // We are at the top, so don't scrollToPosition (would cause unnecessary relayout).
-                return;
-            }
-        }
-        scrollToPosition(0);
     }
 }

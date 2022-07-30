@@ -15,235 +15,288 @@
  */
 package com.android.quickstep;
 
-import static android.os.Process.THREAD_PRIORITY_BACKGROUND;
-
-import static com.android.launcher3.util.Executors.MAIN_EXECUTOR;
 import static com.android.quickstep.TaskUtils.checkCurrentOrManagedUserId;
 
 import android.annotation.TargetApi;
 import android.app.ActivityManager;
 import android.content.ComponentCallbacks2;
+import android.content.ComponentName;
 import android.content.Context;
-import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.res.Resources;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
-import android.os.Process;
+import android.os.Bundle;
+import android.os.Looper;
+import android.os.RemoteException;
 import android.os.UserHandle;
+import androidx.annotation.WorkerThread;
+import android.util.Log;
+import android.util.LruCache;
+import android.util.SparseArray;
+import android.view.accessibility.AccessibilityManager;
 
-import androidx.annotation.VisibleForTesting;
-
-import com.android.launcher3.icons.IconProvider;
-import com.android.launcher3.icons.IconProvider.IconChangeListener;
-import com.android.launcher3.util.Executors.SimpleThreadFactory;
-import com.android.launcher3.util.MainThreadInitializedObject;
-import com.android.quickstep.util.GroupTask;
-import com.android.systemui.shared.recents.model.Task;
-import com.android.systemui.shared.recents.model.ThumbnailData;
+import ch.deletescape.lawnchair.LawnchairIconLoader;
+import com.android.launcher3.MainThreadExecutor;
+import com.android.launcher3.R;
+import com.android.launcher3.Utilities;
+import com.android.launcher3.util.Preconditions;
+import com.android.systemui.shared.recents.ISystemUiProxy;
+import com.android.systemui.shared.recents.model.IconLoader;
+import com.android.systemui.shared.recents.model.RecentsTaskLoadPlan;
+import com.android.systemui.shared.recents.model.RecentsTaskLoadPlan.PreloadOptions;
+import com.android.systemui.shared.recents.model.RecentsTaskLoader;
+import com.android.systemui.shared.recents.model.TaskKeyLruCache;
 import com.android.systemui.shared.system.ActivityManagerWrapper;
-import com.android.systemui.shared.system.KeyguardManagerCompat;
+import com.android.systemui.shared.system.BackgroundExecutor;
 import com.android.systemui.shared.system.TaskStackChangeListener;
-import com.android.systemui.shared.system.TaskStackChangeListeners;
 
-import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
-
-import app.lawnchair.LawnchairApp;
-import app.lawnchair.icons.LawnchairIconProvider;
 
 /**
  * Singleton class to load and manage recents model.
  */
 @TargetApi(Build.VERSION_CODES.O)
-public class RecentsModel extends TaskStackChangeListener implements IconChangeListener {
-
+public class RecentsModel extends TaskStackChangeListener {
     // We do not need any synchronization for this variable as its only written on UI thread.
-    public static final MainThreadInitializedObject<RecentsModel> INSTANCE =
-            new MainThreadInitializedObject<>(RecentsModel::new);
+    private static RecentsModel INSTANCE;
 
-    private static final Executor RECENTS_MODEL_EXECUTOR = Executors.newSingleThreadExecutor(
-            new SimpleThreadFactory("TaskThumbnailIconCache-", THREAD_PRIORITY_BACKGROUND));
+    public static RecentsModel getInstance(final Context context) {
+        if (!Utilities.isRecentsEnabled()) return null;
+        if (INSTANCE == null) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                INSTANCE = new RecentsModel(context.getApplicationContext());
+            } else {
+                try {
+                    return new MainThreadExecutor().submit(
+                            () -> RecentsModel.getInstance(context)).get();
+                } catch (InterruptedException|ExecutionException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+        return INSTANCE;
+    }
 
-    private final List<TaskVisualsChangeListener> mThumbnailChangeListeners = new ArrayList<>();
+    private final SparseArray<Bundle> mCachedAssistData = new SparseArray<>(1);
+    private final ArrayList<AssistDataListener> mAssistDataListeners = new ArrayList<>();
+
     private final Context mContext;
+    private final RecentsTaskLoader mRecentsTaskLoader;
+    private final MainThreadExecutor mMainThreadExecutor;
 
-    private final RecentTasksList mTaskList;
-    private final TaskIconCache mIconCache;
-    private final TaskThumbnailCache mThumbnailCache;
+    private RecentsTaskLoadPlan mLastLoadPlan;
+    private int mLastLoadPlanId;
+    private int mTaskChangeId;
+    private ISystemUiProxy mSystemUiProxy;
+    private boolean mClearAssistCacheOnStackChange = true;
+    private final boolean mIsLowRamDevice;
+    private boolean mPreloadTasksInBackground;
+    private final AccessibilityManager mAccessibilityManager;
 
     private RecentsModel(Context context) {
         mContext = context;
-        mTaskList = new RecentTasksList(MAIN_EXECUTOR,
-                new KeyguardManagerCompat(context), SystemUiProxy.INSTANCE.get(context));
 
-        IconProvider iconProvider = new LawnchairIconProvider(context);
-        mIconCache = new TaskIconCache(context, RECENTS_MODEL_EXECUTOR, iconProvider);
-        mThumbnailCache = new TaskThumbnailCache(context, RECENTS_MODEL_EXECUTOR);
+        ActivityManager activityManager =
+                (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        mIsLowRamDevice = activityManager.isLowRamDevice();
+        mMainThreadExecutor = new MainThreadExecutor();
 
-        if (LawnchairApp.isRecentsEnabled()) {
-            TaskStackChangeListeners.getInstance().registerTaskStackListener(this);
+        Resources res = context.getResources();
+        mRecentsTaskLoader = new RecentsTaskLoader(mContext,
+                res.getInteger(R.integer.config_recentsMaxThumbnailCacheSize),
+                res.getInteger(R.integer.config_recentsMaxIconCacheSize), 0) {
+
+            @Override
+            protected IconLoader createNewIconLoader(Context context,
+                    TaskKeyLruCache<Drawable> iconCache,
+                    LruCache<ComponentName, ActivityInfo> activityInfoCache) {
+                return new LawnchairIconLoader(context, iconCache, activityInfoCache);
+            }
+        };
+        mRecentsTaskLoader.startLoader(mContext);
+        if (Utilities.isRecentsEnabled()) {
+            ActivityManagerWrapper.getInstance().registerTaskStackListener(this);
         }
-        iconProvider.registerIconChangeListener(this, MAIN_EXECUTOR.getHandler());
+
+        mTaskChangeId = 1;
+        loadTasks(-1, null);
+        mAccessibilityManager = context.getSystemService(AccessibilityManager.class);
     }
 
-    public TaskIconCache getIconCache() {
-        return mIconCache;
-    }
-
-    public TaskThumbnailCache getThumbnailCache() {
-        return mThumbnailCache;
+    public RecentsTaskLoader getRecentsTaskLoader() {
+        return mRecentsTaskLoader;
     }
 
     /**
-     * Fetches the list of recent tasks.
-     *
+     * Preloads the task plan
+     * @param taskId The running task id or -1
      * @param callback The callback to receive the task plan once its complete or null. This is
      *                always called on the UI thread.
      * @return the request id associated with this call.
      */
-    public int getTasks(Consumer<ArrayList<GroupTask>> callback) {
-        return mTaskList.getTasks(false /* loadKeysOnly */, callback);
-    }
+    public int loadTasks(int taskId, Consumer<RecentsTaskLoadPlan> callback) {
+        final int requestId = mTaskChangeId;
 
-    /**
-     * @return Whether the provided {@param changeId} is the latest recent tasks list id.
-     */
-    public boolean isTaskListValid(int changeId) {
-        return mTaskList.isTaskListValid(changeId);
-    }
-
-    /**
-     * @return Whether the task list is currently updating in the background
-     */
-    @VisibleForTesting
-    public boolean isLoadingTasksInBackground() {
-        return mTaskList.isLoadingTasksInBackground();
-    }
-
-    /**
-     * Checks if a task has been removed or not.
-     *
-     * @param callback Receives true if task is removed, false otherwise
-     */
-    public void isTaskRemoved(int taskId, Consumer<Boolean> callback) {
-        mTaskList.getTasks(true /* loadKeysOnly */, (taskGroups) -> {
-            for (GroupTask group : taskGroups) {
-                if (group.containsTask(taskId)) {
-                    callback.accept(false);
-                    return;
-                }
+        // Fail fast if nothing has changed.
+        if (mLastLoadPlanId == mTaskChangeId) {
+            if (callback != null) {
+                final RecentsTaskLoadPlan plan = mLastLoadPlan;
+                mMainThreadExecutor.execute(() -> callback.accept(plan));
             }
-            callback.accept(true);
+            return requestId;
+        }
+
+        BackgroundExecutor.get().submit(() -> {
+            // Preload the plan
+            RecentsTaskLoadPlan loadPlan = new RecentsTaskLoadPlan(mContext);
+            PreloadOptions opts = new PreloadOptions();
+            opts.loadTitles = mAccessibilityManager.isEnabled();
+            loadPlan.preloadPlan(opts, mRecentsTaskLoader, taskId, UserHandle.myUserId());
+            // Set the load plan on UI thread
+            mMainThreadExecutor.execute(() -> {
+                mLastLoadPlan = loadPlan;
+                mLastLoadPlanId = requestId;
+
+                if (callback != null) {
+                    callback.accept(loadPlan);
+                }
+            });
         });
+        return requestId;
+    }
+
+    public void setPreloadTasksInBackground(boolean preloadTasksInBackground) {
+        mPreloadTasksInBackground = preloadTasksInBackground && !mIsLowRamDevice;
+    }
+
+    @Override
+    public void onActivityPinned(String packageName, int userId, int taskId, int stackId) {
+        mTaskChangeId++;
+    }
+
+    @Override
+    public void onActivityUnpinned() {
+        mTaskChangeId++;
+    }
+
+    @Override
+    public void onTaskStackChanged() {
+        mTaskChangeId++;
+
+        Preconditions.assertUIThread();
+        if (mClearAssistCacheOnStackChange) {
+            mCachedAssistData.clear();
+        } else {
+            mClearAssistCacheOnStackChange = true;
+        }
     }
 
     @Override
     public void onTaskStackChangedBackground() {
-        if (!mThumbnailCache.isPreloadingEnabled()) {
-            // Skip if we aren't preloading
+        int userId = UserHandle.myUserId();
+        if (!mPreloadTasksInBackground || !checkCurrentOrManagedUserId(userId, mContext)) {
+            // TODO: Only register this for the current user
             return;
         }
 
-        int currentUserId = Process.myUserHandle().getIdentifier();
-        if (!checkCurrentOrManagedUserId(currentUserId, mContext)) {
-            // Skip if we are not the current user
-            return;
-        }
-
-        // Keep the cache up to date with the latest thumbnails
-        ActivityManager.RunningTaskInfo runningTask =
+        // Preload a fixed number of task icons/thumbnails in the background
+        ActivityManager.RunningTaskInfo runningTaskInfo =
                 ActivityManagerWrapper.getInstance().getRunningTask();
-        int runningTaskId = runningTask != null ? runningTask.id : -1;
-        mTaskList.getTaskKeys(mThumbnailCache.getCacheSize(), taskGroups -> {
-            for (GroupTask group : taskGroups) {
-                if (group.containsTask(runningTaskId)) {
-                    // Skip the running task, it's not going to have an up-to-date snapshot by the
-                    // time the user next enters overview
-                    continue;
-                }
-                mThumbnailCache.updateThumbnailInCache(group.task1);
-                mThumbnailCache.updateThumbnailInCache(group.task2);
-            }
-        });
+        RecentsTaskLoadPlan plan = new RecentsTaskLoadPlan(mContext);
+        RecentsTaskLoadPlan.Options launchOpts = new RecentsTaskLoadPlan.Options();
+        launchOpts.runningTaskId = runningTaskInfo != null ? runningTaskInfo.id : -1;
+        launchOpts.numVisibleTasks = 2;
+        launchOpts.numVisibleTaskThumbnails = 2;
+        launchOpts.onlyLoadForCache = true;
+        launchOpts.onlyLoadPausedActivities = true;
+        launchOpts.loadThumbnails = true;
+        PreloadOptions preloadOpts = new PreloadOptions();
+        preloadOpts.loadTitles = mAccessibilityManager.isEnabled();
+        plan.preloadPlan(preloadOpts, mRecentsTaskLoader, -1, userId);
+        mRecentsTaskLoader.loadTasks(plan, launchOpts);
     }
 
-    @Override
-    public void onTaskSnapshotChanged(int taskId, ThumbnailData snapshot) {
-        mThumbnailCache.updateTaskSnapShot(taskId, snapshot);
-
-        for (int i = mThumbnailChangeListeners.size() - 1; i >= 0; i--) {
-            Task task = mThumbnailChangeListeners.get(i).onTaskThumbnailChanged(taskId, snapshot);
-            if (task != null) {
-                task.thumbnail = snapshot;
-            }
-        }
+    public boolean isLoadPlanValid(int resultId) {
+        return mTaskChangeId == resultId;
     }
 
-    @Override
-    public void onTaskRemoved(int taskId) {
-        Task.TaskKey stubKey = new Task.TaskKey(taskId, 0, new Intent(), null, 0, 0);
-        mThumbnailCache.remove(stubKey);
-        mIconCache.onTaskRemoved(stubKey);
+    public RecentsTaskLoadPlan getLastLoadPlan() {
+        return mLastLoadPlan;
+    }
+
+    public void setSystemUiProxy(ISystemUiProxy systemUiProxy) {
+        mSystemUiProxy = systemUiProxy;
+    }
+
+    public ISystemUiProxy getSystemUiProxy() {
+        return mSystemUiProxy;
+    }
+
+    public void onStart() {
+        mRecentsTaskLoader.startLoader(mContext);
     }
 
     public void onTrimMemory(int level) {
         if (level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
-            mThumbnailCache.getHighResLoadingState().setVisible(false);
+            // We already stop the loader in UI_HIDDEN, so stop the high res loader as well
+            mRecentsTaskLoader.getHighResThumbnailLoader().setVisible(false);
         }
-        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
-            // Clear everything once we reach a low-mem situation
-            mThumbnailCache.clear();
-            mIconCache.clearCache();
+        mRecentsTaskLoader.onTrimMemory(level);
+    }
+
+    public void onOverviewShown(boolean fromHome, String tag) {
+        if (mSystemUiProxy == null) {
+            return;
+        }
+        try {
+            mSystemUiProxy.onOverviewShown(fromHome);
+        } catch (RemoteException e) {
+            Log.w(tag,
+                    "Failed to notify SysUI of overview shown from " + (fromHome ? "home" : "app")
+                            + ": ", e);
         }
     }
 
-    @Override
-    public void onAppIconChanged(String packageName, UserHandle user) {
-        mIconCache.invalidateCacheEntries(packageName, user);
-        for (int i = mThumbnailChangeListeners.size() - 1; i >= 0; i--) {
-            mThumbnailChangeListeners.get(i).onTaskIconChanged(packageName, user);
-        }
+    public void resetAssistCache() {
+        mCachedAssistData.clear();
     }
 
-    @Override
-    public void onSystemIconStateChanged(String iconState) {
-        mIconCache.clearCache();
+    @WorkerThread
+    public void preloadAssistData(int taskId, Bundle data) {
+        mMainThreadExecutor.execute(() -> {
+            mCachedAssistData.put(taskId, data);
+            // We expect a stack change callback after the assist data is set. So ignore the
+            // very next stack change callback.
+            mClearAssistCacheOnStackChange = false;
+
+            int count = mAssistDataListeners.size();
+            for (int i = 0; i < count; i++) {
+                mAssistDataListeners.get(i).onAssistDataReceived(taskId);
+            }
+        });
+    }
+
+    public Bundle getAssistData(int taskId) {
+        Preconditions.assertUIThread();
+        return mCachedAssistData.get(taskId);
+    }
+
+    public void addAssistDataListener(AssistDataListener listener) {
+        mAssistDataListeners.add(listener);
+    }
+
+    public void removeAssistDataListener(AssistDataListener listener) {
+        mAssistDataListeners.remove(listener);
     }
 
     /**
-     * Adds a listener for visuals changes
+     * Callback for receiving assist data
      */
-    public void addThumbnailChangeListener(TaskVisualsChangeListener listener) {
-        mThumbnailChangeListeners.add(listener);
-    }
+    public interface AssistDataListener {
 
-    /**
-     * Removes a previously added listener
-     */
-    public void removeThumbnailChangeListener(TaskVisualsChangeListener listener) {
-        mThumbnailChangeListeners.remove(listener);
-    }
-
-    public void dump(String prefix, PrintWriter writer) {
-        writer.println(prefix + "RecentsModel:");
-        mTaskList.dump("  ", writer);
-    }
-
-    /**
-     * Listener for receiving various task properties changes
-     */
-    public interface TaskVisualsChangeListener {
-
-        /**
-         * Called whn the task thumbnail changes
-         */
-        Task onTaskThumbnailChanged(int taskId, ThumbnailData thumbnailData);
-
-        /**
-         * Called when the icon for a task changes
-         */
-        void onTaskIconChanged(String pkg, UserHandle user);
+        void onAssistDataReceived(int taskId);
     }
 }

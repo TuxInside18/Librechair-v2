@@ -16,19 +16,11 @@
 
 package com.android.launcher3;
 
-import android.content.Context;
 import android.graphics.Rect;
 
 import com.android.launcher3.accessibility.DragViewStateAnnouncer;
-import com.android.launcher3.config.FeatureFlags;
 import com.android.launcher3.dragndrop.DragOptions;
 import com.android.launcher3.dragndrop.DragView;
-import com.android.launcher3.dragndrop.DraggableView;
-import com.android.launcher3.folder.FolderNameProvider;
-import com.android.launcher3.logging.InstanceId;
-import com.android.launcher3.logging.InstanceIdSequence;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.util.Executors;
 
 /**
  * Interface defining an object that can receive a drag.
@@ -64,6 +56,9 @@ public interface DropTarget {
         /** Where the drag originated */
         public DragSource dragSource = null;
 
+        /** The object is part of an accessible drag operation */
+        public boolean accessibleDrag;
+
         /** Indicates that the drag operation was cancelled */
         public boolean cancelled = false;
 
@@ -72,21 +67,7 @@ public interface DropTarget {
 
         public DragViewStateAnnouncer stateAnnouncer;
 
-        public FolderNameProvider folderNameProvider;
-
-        /** The source view (ie. icon, widget etc.) that is being dragged and which the
-         * DragView represents. May be an actual View class or a virtual stand-in */
-        public DraggableView originalView = null;
-
-        /** Used for matching DROP event with its corresponding DRAG event on the server side. */
-        public final InstanceId logInstanceId = new InstanceIdSequence().newInstanceId();
-
-        public DragObject(Context context) {
-            if (FeatureFlags.FOLDER_NAME_SUGGEST.get()) {
-                Executors.MODEL_EXECUTOR.post(() -> {
-                    folderNameProvider = FolderNameProvider.newInstance(context);
-                });
-            }
+        public DragObject() {
         }
 
         /**
@@ -97,17 +78,17 @@ public interface DropTarget {
          */
         public final float[] getVisualCenter(float[] recycle) {
             final float res[] = (recycle == null) ? new float[2] : recycle;
-            Rect dragRegion = dragView.getDragRegion();
 
             // These represent the visual top and left of drag view if a dragRect was provided.
             // If a dragRect was not provided, then they correspond to the actual view left and
             // top, as the dragRect is in that case taken to be the entire dragView.
-            int left = x - xOffset - dragRegion.left;
-            int top = y - yOffset - dragRegion.top;
+            // R.dimen.dragViewOffsetY.
+            int left = x - xOffset;
+            int top = y - yOffset;
 
             // In order to find the visual center, we shift by half the dragRect
-            res[0] = left + dragRegion.width() / 2;
-            res[1] = top + dragRegion.height() / 2;
+            res[0] = left + dragView.getDragRegion().width() / 2;
+            res[1] = top + dragView.getDragRegion().height() / 2;
 
             return res;
         }

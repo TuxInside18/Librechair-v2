@@ -1,198 +1,180 @@
+/*
+ *     This file is part of Lawnchair Launcher.
+ *
+ *     Lawnchair Launcher is free software: you can redistribute it and/or modify
+ *     it under the terms of the GNU General Public License as published by
+ *     the Free Software Foundation, either version 3 of the License, or
+ *     (at your option) any later version.
+ *
+ *     Lawnchair Launcher is distributed in the hope that it will be useful,
+ *     but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *     GNU General Public License for more details.
+ *
+ *     You should have received a copy of the GNU General Public License
+ *     along with Lawnchair Launcher.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import org.gradle.api.tasks.wrapper.Wrapper.DistributionType
+
 buildscript {
-    ext {
-        kotlin_version = "1.7.0"
-        compose_version = "1.2.0-rc03"
-        compose_compiler_version = "1.2.0"
-        accompanist_version = '0.24.10-beta'
-        libsu_version = '3.1.2'
-        protocVersion = '3.18.0'
-        room_version = '2.4.2'
-    }
+    ext.kotlin_version = '1.3.50'
     repositories {
-        mavenCentral()
         google()
+        jcenter()
+        maven {
+            url 'https://maven.repository.redhat.com/ga/'
+        }
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:7.2.1'
-        classpath PROTOBUF_CLASS_PATH
+        classpath 'com.android.tools.build:gradle:3.5.0-rc02'
+        classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.8'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-        classpath "org.jetbrains.kotlin:kotlin-serialization:$kotlin_version"
-        classpath 'com.google.android.gms:oss-licenses-plugin:0.10.5'
-        classpath 'dev.rikka.tools.refine:gradle-plugin:3.1.1'
-        classpath "com.google.devtools.ksp:com.google.devtools.ksp.gradle.plugin:1.7.0-1.0.6"
     }
 }
 
-final String FRAMEWORK_PREBUILTS_DIR = "prebuilts"
-final def keystorePropertiesFile = rootProject.file("keystore.properties")
-
-wrapper {
-    gradleVersion = '6.8.3'
+tasks {
+    wrapper {
+        gradleVersion = "5.4.1"
+        distributionType = DistributionType.ALL
+    }
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        maven { url 'https://jitpack.io' }
-    }
+final String SUPPORT_LIBS_VERSION = '28.0.0-alpha1'
 
-    ext.getFrameworkJar = { String name ->
-        def frameworkJar = new File(rootProject.projectDir, 'prebuilts/libs/' + name)
-        if (!frameworkJar.exists()) {
-            throw new IllegalArgumentException("Framework jar path doesn't exist")
-        }
-        return frameworkJar
-    }
+Properties localProps = new Properties()
+File localPropsFile = project.rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localProps.load(localPropsFile.newDataInputStream())
+}
 
-    ext.addFrameworkJar = { String name ->
-        def frameworkJar = getFrameworkJar(name)
-        gradle.projectsEvaluated {
-            tasks.withType(JavaCompile) {
-                options.bootstrapClasspath = files([frameworkJar] + (options.bootstrapClasspath.files as Iterable<File>))
-            }
-            tasks.withType(org.jetbrains.kotlin.gradle.internal.KaptWithoutKotlincTask) {
-                it.classpath.from(files([frameworkJar]))
-            }
-            tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile) {
-                it.classpath.from(files([frameworkJar]))
-            }
+def publicBranches = ["alpha", "beta"]
+def ciBuild = localProps.getProperty("ciBuild") == "true" || System.getenv("CI_BUILD") == "true"
+def isPublicBuild = localProps.getProperty("public") == "true" || (ciBuild && publicBranches.contains(System.getenv("DRONE_BRANCH")))
+configurations.all {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'com.android.support') {
+            details.useVersion "${SUPPORT_LIBS_VERSION}"
         }
     }
+}
 
-    ext.replaceFrameworkJar = { String name ->
-        def frameworkJar = getFrameworkJar(name)
-        gradle.projectsEvaluated {
-            tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile) {
-                def originalFiles = [] + it.classpath.files
-                def newFiles = []
-                originalFiles.each { file ->
-                    if (file.path.endsWith('android.jar')) {
-                        newFiles.add(frameworkJar)
-                    } else {
-                        newFiles.add(file)
-                    }
-                }
-                it.classpath.setFrom(files([]))
-                it.classpath.from(files(newFiles))
-            }
-        }
+def getGitHash = { ->
+    def stdout = new ByteArrayOutputStream()
+    exec {
+        commandLine 'git', 'rev-parse', '--short', 'HEAD'
+        standardOutput = stdout
     }
-
-    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
-        kotlinOptions {
-            freeCompilerArgs += "-opt-in=kotlin.RequiresOptIn"
-        }
-    }
+    return stdout.toString().trim()
 }
 
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-kapt'
 apply plugin: 'com.google.protobuf'
-apply plugin: 'com.google.android.gms.oss-licenses-plugin'
-apply plugin: 'kotlin-parcelize'
-apply plugin: "com.google.devtools.ksp"
-apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
-apply plugin: 'dev.rikka.tools.refine'
-
-final def commitHash = { ->
-    final def stdout = new ByteArrayOutputStream()
-    exec {
-        commandLine 'git', 'rev-parse', '--short=7', 'HEAD'
-        standardOutput = stdout
-    }
-    stdout.toString().trim()
-}
-
-def ciBuild = System.getenv("CI") == "true"
-def ciRef = System.getenv("GITHUB_REF") ?: ""
-def ciRunNumber = System.getenv("GITHUB_RUN_NUMBER") ?: ""
-def isReleaseBuild = ciBuild && ciRef.contains("alpha")
-def buildCommit = commitHash()
-def devReleaseName
-if (ciBuild) {
-    devReleaseName = "Dev (#${ciRunNumber})"
-} else {
-    devReleaseName = "Dev (${buildCommit})"
-}
-
-def version = "12.1.0"
-def releaseName = "Beta 1"
-def versionDisplayName = "${version} ${isReleaseBuild ? releaseName : devReleaseName}"
-def majorVersion = versionDisplayName.split("\\.")[0]
-
-def quickstepMinSdk = "32"
-def quickstepMaxSdk = "32"
 
 android {
-    compileSdkVersion COMPILE_SDK
-    buildToolsVersion BUILD_TOOLS_VERSION
+    compileSdkVersion 29
+    buildToolsVersion '28.0.3'
 
-    lintOptions {
-        checkReleaseBuilds false
+    packagingOptions {
+        exclude "META-INF/DEPENDENCIES"
     }
 
+    signingConfigs {
+        ci {
+            storeFile file("debug.jks")
+            storePassword localProps.getProperty("storePass") ?: System.getenv("STORE_PASSWORD")
+            keyAlias "Lawnchair"
+            keyPassword localProps.getProperty("keyPass") ?:System.getenv("KEY_PASSWORD")
+        }
+    }
     defaultConfig {
         minSdkVersion 26
-        targetSdkVersion 32
-        versionCode 12_01_00_04
-        versionName "${versionDisplayName}"
-        buildConfigField "String", "VERSION_DISPLAY_NAME", "\"${versionDisplayName}\""
-        buildConfigField "String", "MAJOR_VERSION", "\"${majorVersion}\""
-        buildConfigField "String", "COMMIT_HASH", "\"${buildCommit}\""
-        buildConfigField "boolean", "ENABLE_AUTO_INSTALLS_LAYOUT", "false"
+        targetSdkVersion 29
 
-        manifestPlaceholders.quickstepMinSdk = quickstepMinSdk
-        manifestPlaceholders.quickstepMaxSdk = quickstepMaxSdk
-        buildConfigField "int", "QUICKSTEP_MIN_SDK", quickstepMinSdk
-        buildConfigField "int", "QUICKSTEP_MAX_SDK", quickstepMaxSdk
+        if (ciBuild) {
+            def ciBuildNumber = localProps.getProperty("buildNumber") ?: System.getenv("CI_BUILD_NUMBER")
+            versionCode = Integer.valueOf(ciBuildNumber)
+            def majorMinor = localProps.getProperty("majorMinor") ?: System.getenv("MAJOR_MINOR")
+            def drone = localProps.getProperty("public") == "true" || System.getenv("DRONE")
+            versionName = majorMinor + (drone ? "-" : ".") + ciBuildNumber
+        } else {
+            versionCode 2
+            versionName getGitHash()
+        }
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
 
-        ksp { arg("room.schemaLocation", "$projectDir/schemas".toString()) }
-    }
+        buildConfigField "boolean", "FEATURE_QUINOA", "true"
+        buildConfigField "boolean", "FEATURE_SETTINGS_SEARCH", "true"
+        buildConfigField "boolean", "DEBUG_STRICT_MODE", "false"
+        buildConfigField "boolean", "HAS_LEAKCANARY", "false"
 
-    applicationVariants.all { variant ->
-        variant.outputs.all {
-            outputFileName = "Lawnchair ${variant.versionName}.apk"
+        def githubToken = localProps.getProperty('githubToken') ?: '"' + System.getenv("GITHUB_TOKEN") + '"'
+        buildConfigField "String", "GITHUB_TOKEN", githubToken
+
+        buildConfigField "boolean", "SIGNATURE_VERIFICATION", "true"
+
+        def debugMenuCode = System.getenv("DEBUG_MENU_CODE") ?: "veryperu"
+        buildConfigField "String", "DEBUG_MENU_CODE_HASH", '"' + debugMenuCode.digest('SHA-1') + '"'
+
+        def accuWeatherKey = "\"a66ee5e2ffcb44e8955c7cc9e84f2cf5\""
+        buildConfigField "String", "WEATHER_CHANNEL_KEY", '"' + (System.getenv("WC_KEY") == null ? "8de2d8b3a93542c9a2d8b3a935a2c909" : System.getenv("WC_KEY")) + '"'
+        buildConfigField "String", "WEATHER_CHANNEL_FORECAST_KEY", '"' + (System.getenv("WC_FORECAST_KEY") == null ? "d522aa97197fd864d36b418f39ebb323" : System.getenv("WC_FORECAST_KEY")) + '"'
+        buildConfigField "String", "ACCUWEATHER_KEY", accuWeatherKey
+
+        ndk {
+            abiFilters "armeabi-v7a", "x86", "x86_64", "arm64-v8a"
         }
-        resValue("string", "launcher_component", "${applicationId}/app.lawnchair.LawnchairLauncher")
     }
+    buildTypes {
+        debug {
+            minifyEnabled false
+            if (ciBuild) {
+                if (System.getenv("CI_EVENT_TYPE") != "pull_request") {
+                    signingConfig signingConfigs.ci
+                }
+            }
 
-    buildFeatures {
-        compose true
-    }
+            dexOptions {
+                matchingFallbacks = ['debug']
+            }
+        }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = compose_compiler_version
-    }
+        optimized {
+            /*
+             * LIBRE_CHANGED: Proguard minification gets in the way of audits and reverse-engineering
+             */
+            initWith debug
+            minifyEnabled false
+            if (ciBuild) {
+                if (System.getenv("CI_EVENT_TYPE") != "pull_request") {
+                    signingConfig signingConfigs.ci
+                }
+            }
+        }
 
-    if (keystorePropertiesFile.exists()) {
-        final def keystoreProperties = new Properties()
-        keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+        release {
+            /*
+             * LIBRE_CHANGED: Proguard minification gets in the way of audits and reverse-engineering
+             */
+            minifyEnabled false
+            if (ciBuild) {
+                if (System.getenv("CI_EVENT_TYPE") != "pull_request") {
+                    signingConfig signingConfigs.ci
+                }
+            }
 
-        signingConfigs {
-            release {
-                keyAlias keystoreProperties['keyAlias']
-                keyPassword keystoreProperties['keyPassword']
-                storeFile rootProject.file(keystoreProperties['storeFile'])
-                storePassword keystoreProperties['storePassword']
+            dexOptions {
+                matchingFallbacks = ['release']
             }
         }
     }
 
-    buildTypes {
-        debug {
-
-        }
-
-        release {
-            if (keystorePropertiesFile.exists()) signingConfig signingConfigs.release
-            minifyEnabled true
-            shrinkResources true
-            proguardFiles "proguard-android-optimize.txt", "proguard.pro"
-        }
+    lintOptions {
+        checkReleaseBuilds false
     }
 
     kotlinOptions {
@@ -204,53 +186,89 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
-    // The flavor dimensions for build variants (e.g. aospWithQuickstep, aospWithoutQuickstep)
-    // See: https://developer.android.com/studio/build/build-variants#flavor-dimensions
-    flavorDimensions "app", "recents"
+    flavorDimensions "default", "custom", "go", "build"
 
     productFlavors {
         aosp {
-            dimension "app"
-            applicationId 'com.android.launcher3'
+            dimension "default"
+            applicationId 'launcher.libre'
             testApplicationId 'com.android.launcher3.tests'
         }
 
         l3go {
-            dimension "app"
-            applicationId 'com.android.launcher3'
+            dimension "go"
+            applicationIdSuffix ".go"
+            versionNameSuffix "-dev"
+        }
+
+        l3ri {
+            dimension "go"
+        }
+
+        quickstep {
+            dimension "default"
+            applicationId 'launcher.libre'
             testApplicationId 'com.android.launcher3.tests'
         }
 
-        lawn {
-            dimension "app"
-            applicationId 'app.lawnchair'
-            testApplicationId 'com.android.launcher3.tests'
+        lawnchair {
+            dimension "custom"
         }
 
-        withQuickstep {
-            dimension "recents"
-
-            minSdkVersion 26
+        dev {
+            dimension "build"
+            // Use v1 dev package name for compatibility testing
+            if (localProps.getProperty("v1compat") != "true") {
+                applicationIdSuffix ".dev"
+            }
+            versionNameSuffix "-dev"
         }
 
-        withoutQuickstep {
-            dimension "recents"
+        ci {
+            dimension "build"
+            applicationIdSuffix ".ci"
+            versionNameSuffix "-ci-" + (localProps.getProperty("branch") ?: System.getenv("DRONE_BRANCH"))
+
+            buildConfigField "boolean", "SIGNATURE_VERIFICATION", "true"
+        }
+
+        plah {
+            dimension "build"
+            applicationIdSuffix ".plah"
+
+            buildConfigField "boolean", "SIGNATURE_VERIFICATION", "true"
         }
     }
 
     sourceSets {
         main {
             res.srcDirs = ['res']
-            java.srcDirs = ['src', 'src_plugins']
+            java.srcDirs = ['src']
+            aidl.srcDirs = ['src']
+            assets.srcDirs = ['assets']
             manifest.srcFile 'AndroidManifest-common.xml'
             proto {
-                srcDirs = ['protos/', 'quickstep/protos_overrides/']
+                srcDir 'protos/'
+                srcDir 'proto_overrides/'
+                srcDir 'proto_pixel/'
             }
+        }
+
+        debug {
+            manifest.srcFile "AndroidManifest.xml"
+        }
+
+        optimized {
+            manifest.srcFile "AndroidManifest.xml"
+        }
+
+        release {
+            manifest.srcFile "AndroidManifest.xml"
         }
 
         androidTest {
             res.srcDirs = ['tests/res']
-            java.srcDirs = ['tests/src', 'tests/tapl']
+            java.srcDirs = ['tests/src']
             manifest.srcFile "tests/AndroidManifest-common.xml"
         }
 
@@ -259,167 +277,164 @@ android {
         }
 
         aosp {
-            java.srcDirs = ['src_flags', 'src_shortcuts_overrides']
-        }
-
-        aospWithoutQuickstep {
-            manifest.srcFile "AndroidManifest.xml"
-        }
-
-        aospWithQuickstep {
-            manifest.srcFile "quickstep/AndroidManifest-launcher.xml"
+            java.srcDirs = ['src_flags', "src_ui_overrides"]
         }
 
         l3go {
             res.srcDirs = ['go/res']
-            java.srcDirs = ['go/src']
+            java.srcDirs = ['go/src_flags']
             manifest.srcFile "go/AndroidManifest.xml"
         }
 
-        l3goWithoutQuickstepDebug {
-            manifest.srcFile "AndroidManifest.xml"
+        l3ri {
+            java.srcDirs = ['src_flags']
         }
 
-        l3goWithQuickstepDebug {
-            manifest.srcFile "quickstep/AndroidManifest-launcher.xml"
-        }
-
-        lawn {
-            java.srcDirs = ['src_flags', 'src_shortcuts_overrides', 'lawnchair/src']
-            aidl.srcDirs = ['lawnchair/aidl']
-            res.srcDirs = ['lawnchair/res']
-            manifest.srcFile "lawnchair/AndroidManifest.xml"
-            assets {
-                srcDirs 'lawnchair/assets'
-            }
-            proto {
-                srcDirs = ['lawnchair/protos/']
-            }
-        }
-
-        lawnWithoutQuickstep {
-            manifest.srcFile "AndroidManifest.xml"
-        }
-
-        lawnWithQuickstep {
-            manifest.srcFile "quickstep/AndroidManifest-launcher.xml"
-        }
-
-        withoutQuickstep {
-            java.srcDirs = ['src_ui_overrides']
-        }
-
-        withQuickstep {
-            res.srcDirs = ['quickstep/res', 'quickstep/recents_ui_overrides/res']
-            java.srcDirs = ['quickstep/src', 'quickstep/recents_ui_overrides/src']
+        quickstep {
+            res.srcDirs = ['quickstep/res']
+            java.srcDirs = ['quickstep/src']
             manifest.srcFile "quickstep/AndroidManifest.xml"
+        }
+
+        lawnchair {
+            res.srcDirs = ['lawnchair/res']
+            java.srcDirs = ['lawnchair/src']
+            manifest.srcFile "lawnchair/AndroidManifest.xml"
         }
     }
 
-    addFrameworkJar('framework-12l.jar')
+    gradle.projectsEvaluated {
+        tasks.withType(JavaCompile) {
+            options.compilerArgs.add('-Xbootclasspath/p:prebuilts/libs/framework.jar')
+        }
+    }
 }
+
+afterEvaluate {
+    android.applicationVariants.all { variant ->
+        variant.resValue 'string', 'application_id', variant.applicationId
+    }
+}
+
+apply from: 'lawnchair/smali.gradle'
 
 allprojects {
     repositories {
-        maven { url "../../../prebuilts/sdk/current/androidx/m2repository" }
-        maven { url "../../../prebuilts/fullsdk-darwin/extras/android/m2repository" }
-        maven { url "../../../prebuilts/fullsdk-linux/extras/android/m2repository" }
-        mavenCentral()
         google()
+        mavenCentral()
+        jcenter()
+        maven { url 'https://jitpack.io' }
+        maven {
+            url 'https://maven.repository.redhat.com/ga/'
+        }
     }
 }
 
 dependencies {
-    implementation "androidx.dynamicanimation:dynamicanimation:${ANDROID_X_VERSION}"
-    implementation "androidx.recyclerview:recyclerview:${ANDROID_X_VERSION}"
-    implementation "androidx.preference:preference-ktx:${ANDROID_X_VERSION}"
-    implementation project(':iconloaderlib')
-    implementation project(':searchuilib')
-    implementation fileTree(dir: "${FRAMEWORK_PREBUILTS_DIR}/libs", include: 'SystemUI-statsd.jar')
+    implementation 'androidx.appcompat:appcompat:1.0.0'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'com.google.android.material:material:1.0.0'
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    implementation 'androidx.dynamicanimation:dynamicanimation:1.0.0'
+    implementation 'androidx.recyclerview:recyclerview:1.0.0'
+    implementation 'androidx.palette:palette:1.0.0'
+    implementation 'androidx.preference:preference:1.0.0'
+    implementation 'androidx.legacy:legacy-preference-v14:1.0.0'
+    implementation 'androidx.constraintlayout:constraintlayout:1.1.3'
+    implementation 'info.bliki.wiki:bliki-core:3.1.0'
+    implementation 'commons-io:commons-io:2.6'
 
-    // Recents lib dependency
-    withQuickstepImplementation project(':SystemUIShared')
-    withQuickstepCompileOnly project(':hidden-api')
-    implementation fileTree(dir: "${FRAMEWORK_PREBUILTS_DIR}/libs", include: 'WindowManager-Shell.jar')
+    compileOnly fileTree(dir: 'prebuilts/libs', include: '*.jar')
 
-    // Required for AOSP to compile. This is already included in the sysui_shared.jar
-    withoutQuickstepImplementation fileTree(dir: "${FRAMEWORK_PREBUILTS_DIR}/libs", include: 'plugin_core.jar')
+    implementation 'io.github.java-diff-utils:java-diff-utils:4.0'
 
+    implementation 'com.github.mmin18:realtimeblurview:1.2.1'
+
+    implementation 'com.rometools:rome:1.12.1'
+    implementation 'com.googlecode:openbeans:1.0'
+
+    implementation 'com.github.florent37:fiftyshadesof:1.0.0'
+    implementation 'com.google.protobuf.nano:protobuf-javanano:3.0.0-alpha-7'
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
-    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.3.2'
-    testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'org.mockito:mockito-core:4.5.1'
+    implementation 'com.github.KwabenBerko:OpenWeatherMap-Android-Library:2.0.1'
+    implementation 'net.aksingh:owm-japis:2.5.3.0'
+    implementation 'com.github.LawnchairLauncher:chroma:1.2.6'
+    implementation 'com.github.LawnchairLauncher:hoko-lite:4e0d797'
+    implementation('com.github.LawnchairLauncher:attribouter-y:0.1.6') {
+        // The "MaterialButton" styleable defines an attr named iconSize which breaks compatibility with our source base
+        exclude group: 'com.android.support', module: 'design'
+    }
+    implementation 'com.github.bumptech.glide:glide:4.8.0'
+    implementation 'com.github.topjohnwu.libsu:core:2.5.0'
+    implementation 'com.squareup.picasso:picasso:2.71828'
+    implementation 'eu.chainfire:librootjava:1.3.0'
+    implementation 'com.luckycatlabs:SunriseSunsetCalculator:1.2'
+    implementation 'me.mvdw.recyclerviewmergeadapter:recyclerviewmergeadapter:2.1.0'
+    implementation 'com.squareup.retrofit2:retrofit:2.6.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.0.0-RC1'
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.0.0-RC1'
+    implementation 'com.squareup.retrofit2:converter-gson:2.6.0'
+    implementation 'io.swagger.core.v3:swagger-annotations:2.0.0'
+    implementation 'javax.annotation:javax.annotation-api:1.3.2'
+
+    implementation 'io.github.cdimascio:essence:0.13.0'
+    implementation 'com.github.Gryzor:SwipeNoLib:v1.0.6'
+
+    implementation 'me.xdrop:fuzzywuzzy:1.2.0'
+
+    quickstepImplementation project(':systemui-shared')
+    l3goImplementation project(':systemui-shared')
+
+    implementation project(':launcherclient')
+
+    if (!isPublicBuild) {
+        // TODO: update to 2.x when we're on AndroidX
+        implementation 'com.squareup.leakcanary:leakcanary-android:1.6.3'
+        implementation 'com.squareup.leakcanary:leakcanary-support-fragment:1.6.3'
+    } else {
+        implementation 'com.squareup.leakcanary:leakcanary-android-no-op:1.6.3'
+    }
+    implementation 'fastily:jwiki:1.7.0'
+    testImplementation 'junit:junit:4.12'
+    androidTestImplementation "org.mockito:mockito-core:1.9.5"
     androidTestImplementation 'com.google.dexmaker:dexmaker:1.2'
     androidTestImplementation 'com.google.dexmaker:dexmaker-mockito:1.2'
-    androidTestImplementation 'com.android.support.test:runner:1.0.2'
-    androidTestImplementation 'com.android.support.test:rules:1.0.2'
-    androidTestImplementation 'com.android.support.test.uiautomator:uiautomator-v18:2.1.3'
-    androidTestImplementation "androidx.annotation:annotation:${ANDROID_X_VERSION}"
-    implementation 'com.github.ChickenHook:RestrictionBypass:2.2'
-    implementation 'dev.rikka.tools.refine:runtime:3.1.1'
+    androidTestImplementation 'androidx.test:runner:1.1.0'
+    androidTestImplementation 'androidx.test:rules:1.1.0'
+    androidTestImplementation 'androidx.test.uiautomator:uiautomator:2.2.0'
+    androidTestImplementation 'androidx.annotation:annotation:1.0.0'
+    implementation "org.jetbrains.kotlin:kotlin-reflect:1.3.31"
+    implementation "androidx.room:room-runtime:2.2.0-beta01"
 
-    implementation "androidx.compose.ui:ui:$compose_version"
-    implementation "androidx.compose.ui:ui-tooling:$compose_version"
-    implementation "androidx.compose.ui:ui-text-google-fonts:$compose_version"
-    implementation "androidx.compose.foundation:foundation:$compose_version"
-    implementation "androidx.compose.material:material:$compose_version"
-    implementation "androidx.compose.material3:material3:1.0.0-alpha14"
-    implementation "androidx.compose.runtime:runtime-livedata:$compose_version"
-    implementation "androidx.compose.runtime:runtime-rxjava2:$compose_version"
-    implementation "androidx.compose.compiler:compiler:$compose_compiler_version"
-    implementation "androidx.constraintlayout:constraintlayout:2.1.4"
-    implementation "androidx.activity:activity-compose:1.5.0"
-    implementation "androidx.lifecycle:lifecycle-viewmodel-compose:2.5.0"
-    implementation "androidx.navigation:navigation-compose:2.5.0"
-    implementation "androidx.palette:palette-ktx:${ANDROID_X_VERSION}"
-    implementation "androidx.slice:slice-core:1.1.0-alpha02"
-    implementation "com.google.accompanist:accompanist-drawablepainter:$accompanist_version"
-    implementation "com.google.accompanist:accompanist-insets-ui:$accompanist_version"
-    implementation "com.google.accompanist:accompanist-navigation-animation:$accompanist_version"
-    implementation "com.google.accompanist:accompanist-permissions:$accompanist_version"
-    implementation "com.google.accompanist:accompanist-pager:$accompanist_version"
-    implementation "com.google.accompanist:accompanist-placeholder-material:$accompanist_version"
-    implementation "com.google.accompanist:accompanist-systemuicontroller:$accompanist_version"
-    implementation "com.google.android.material:material:1.6.1"
-    implementation "io.github.fornewid:material-motion-compose-core:0.8.4"
-    implementation 'dev.kdrag0n:colorkt:1.0.5'
-    implementation 'io.coil-kt:coil-compose:2.0.0'
-    implementation 'me.xdrop:fuzzywuzzy:1.4.0'
-    implementation "com.patrykmichalik:opto:1.0.12"
-    implementation "androidx.datastore:datastore-preferences:1.0.0"
-    implementation "com.squareup.retrofit2:retrofit:2.9.0"
-    implementation "com.squareup.retrofit2:converter-gson:2.9.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.3.0"
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.3.0'
+    annotationProcessor "androidx.room:room-compiler:2.2.0-beta01"
+    kapt "androidx.room:room-compiler:2.2.0-beta01"
 
-    implementation "androidx.room:room-runtime:$room_version"
-    implementation "androidx.room:room-ktx:$room_version"
-    implementation "androidx.room:room-rxjava2:$room_version"
-    ksp "androidx.room:room-compiler:$room_version"
-
-    implementation "com.github.topjohnwu.libsu:core:$libsu_version"
-    implementation "com.github.topjohnwu.libsu:service:$libsu_version"
-
-    implementation 'com.google.protobuf:protobuf-javalite:3.8.0'
-    implementation 'com.github.LawnchairLauncher:oss-notices:1.0.2'
-
-    // Persian Date
-    implementation 'com.github.samanzamani:PersianDate:1.5.4'
-
-    api 'com.airbnb.android:lottie:5.0.3'
+    implementation 'androidx.lifecycle:lifecycle-livedata:2.2.0-alpha03'
 }
 
 protobuf {
     // Configure the protoc executable
     protoc {
-        artifact = "com.google.protobuf:protoc:${protocVersion}"
-    }
-    generateProtoTasks {
-        all().each { task ->
-            task.builtins {
-                remove java
-                java {
-                    option "lite"
+        artifact = 'com.google.protobuf:protoc:3.0.0-alpha-3'
+
+        generateProtoTasks {
+            all().each { task ->
+                task.builtins {
+                    remove java
+                    javanano {
+                        option "java_package=launcher_log_extension.proto|com.android.launcher3.userevent.nano"
+                        option "java_package=launcher_log.proto|com.android.launcher3.userevent.nano"
+                        option "java_package=launcher_dump.proto|com.android.launcher3.model.nano"
+                        option "java_package=search.proto|com.google.android.apps.nexuslauncher.search.nano"
+                        option "java_package=smartspace.proto|com.google.android.apps.nexuslauncher.smartspace.nano"
+                        option "enum_style=java"
+                    }
                 }
             }
         }
     }
 }
+
+apply plugin: 'kotlin-android-extensions'

@@ -12,55 +12,52 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * Modifications copyright 2021, Lawnchair
  */
 package com.android.launcher3.allapps;
-
-import static com.android.launcher3.touch.ItemLongClickListener.INSTANCE_ALL_APPS;
 
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
-import android.view.Gravity;
-import android.view.LayoutInflater;
-import android.view.View;
-import android.view.View.OnClickListener;
-import android.view.View.OnFocusChangeListener;
-import android.view.View.OnLongClickListener;
-import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityEvent;
-import android.widget.TextView;
-
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityEventCompat;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 import androidx.core.view.accessibility.AccessibilityRecordCompat;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-
-import com.android.launcher3.BaseDraggingActivity;
+import android.view.Gravity;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.View.OnFocusChangeListener;
+import android.view.ViewConfiguration;
+import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityEvent;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.TextView;
+import ch.deletescape.lawnchair.colors.ColorEngine;
+import ch.deletescape.lawnchair.colors.ColorEngine.Resolvers;
+import ch.deletescape.lawnchair.globalsearch.SearchProvider;
+import ch.deletescape.lawnchair.globalsearch.SearchProviderController;
+import ch.deletescape.lawnchair.globalsearch.providers.web.WebSearchProvider;
+import com.android.launcher3.AppInfo;
 import com.android.launcher3.BubbleTextView;
+import com.android.launcher3.Launcher;
 import com.android.launcher3.R;
-import com.android.launcher3.config.FeatureFlags;
-import com.android.launcher3.model.data.AppInfo;
-import com.android.launcher3.model.data.ItemInfoWithIcon;
+import com.android.launcher3.allapps.AlphabeticalAppsList.AdapterItem;
+import com.android.launcher3.compat.UserManagerCompat;
+import com.android.launcher3.folder.FolderIcon;
+import com.android.launcher3.touch.ItemClickHandler;
+import com.android.launcher3.touch.ItemLongClickListener;
 import com.android.launcher3.util.PackageManagerHelper;
-import com.android.launcher3.util.Themes;
-
-import java.util.Arrays;
 import java.util.List;
 
 /**
  * The grid view adapter of all the apps.
  */
-public class AllAppsGridAdapter extends
-        RecyclerView.Adapter<AllAppsGridAdapter.ViewHolder> {
+public class AllAppsGridAdapter extends RecyclerView.Adapter<AllAppsGridAdapter.ViewHolder> {
 
     public static final String TAG = "AppsGridAdapter";
 
-    // A normal icon
+    // A normal iconView
     public static final int VIEW_TYPE_ICON = 1 << 1;
     // The message shown when there are no filtered results
     public static final int VIEW_TYPE_EMPTY_SEARCH = 1 << 2;
@@ -72,94 +69,30 @@ public class AllAppsGridAdapter extends
 
     // A divider that separates the apps list and the search market button
     public static final int VIEW_TYPE_ALL_APPS_DIVIDER = 1 << 4;
+    public static final int VIEW_TYPE_WORK_TAB_FOOTER = 1 << 5;
+
+    // Drawer folders
+    public static final int VIEW_TYPE_FOLDER = 1 << 6;
+    // Web search suggestions
+    public static final int VIEW_TYPE_SEARCH_SUGGESTION = 1 << 7;
 
     // Common view type masks
     public static final int VIEW_TYPE_MASK_DIVIDER = VIEW_TYPE_ALL_APPS_DIVIDER;
-    public static final int VIEW_TYPE_MASK_ICON = VIEW_TYPE_ICON;
+    public static final int VIEW_TYPE_MASK_ICON = VIEW_TYPE_ICON | VIEW_TYPE_FOLDER;
 
 
-    private final BaseAdapterProvider[] mAdapterProviders;
+    public interface BindViewCallback {
+
+        void onBindView(ViewHolder holder);
+    }
 
     /**
-     * ViewHolder for each icon.
+     * ProviderItemViewHolder for each iconView.
      */
     public static class ViewHolder extends RecyclerView.ViewHolder {
 
         public ViewHolder(View v) {
             super(v);
-        }
-    }
-
-    /**
-     * Info about a particular adapter item (can be either section or app)
-     */
-    public static class AdapterItem {
-        /** Common properties */
-        // The index of this adapter item in the list
-        public int position;
-        // The type of this item
-        public int viewType;
-
-        // The section name of this item.  Note that there can be multiple items with different
-        // sectionNames in the same section
-        public String sectionName = null;
-        // The row that this item shows up on
-        public int rowIndex;
-        // The index of this app in the row
-        public int rowAppIndex;
-        // The associated ItemInfoWithIcon for the item
-        public ItemInfoWithIcon itemInfo = null;
-        // The index of this app not including sections
-        public int appIndex = -1;
-        // Search section associated to result
-        public DecorationInfo decorationInfo = null;
-
-        /**
-         * Factory method for AppIcon AdapterItem
-         */
-        public static AdapterItem asApp(int pos, String sectionName, AppInfo appInfo,
-                int appIndex) {
-            AdapterItem item = new AdapterItem();
-            item.viewType = VIEW_TYPE_ICON;
-            item.position = pos;
-            item.sectionName = sectionName;
-            item.itemInfo = appInfo;
-            item.appIndex = appIndex;
-            return item;
-        }
-
-        /**
-         * Factory method for empty search results view
-         */
-        public static AdapterItem asEmptySearch(int pos) {
-            AdapterItem item = new AdapterItem();
-            item.viewType = VIEW_TYPE_EMPTY_SEARCH;
-            item.position = pos;
-            return item;
-        }
-
-        /**
-         * Factory method for a dividerView in AllAppsSearch
-         */
-        public static AdapterItem asAllAppsDivider(int pos) {
-            AdapterItem item = new AdapterItem();
-            item.viewType = VIEW_TYPE_ALL_APPS_DIVIDER;
-            item.position = pos;
-            return item;
-        }
-
-        /**
-         * Factory method for a market search button
-         */
-        public static AdapterItem asMarketSearch(int pos) {
-            AdapterItem item = new AdapterItem();
-            item.viewType = VIEW_TYPE_SEARCH_MARKET;
-            item.position = pos;
-            return item;
-        }
-
-        protected boolean isCountedForAccessibility() {
-            return viewType == VIEW_TYPE_ICON || viewType == VIEW_TYPE_SEARCH_MARKET;
         }
     }
 
@@ -215,8 +148,8 @@ public class AllAppsGridAdapter extends
         }
 
         /**
-         * Returns the number of rows before {@param adapterPosition}, including this position
-         * which should not be counted towards the collection info.
+         * Returns the number of rows before {@param adapterPosition}, including this position which
+         * should not be counted towards the collection info.
          */
         private int getRowsNotForAccessibility(int adapterPosition) {
             List<AdapterItem> items = mApps.getAdapterItems();
@@ -243,44 +176,32 @@ public class AllAppsGridAdapter extends
 
         @Override
         public int getSpanSize(int position) {
-            int viewType = mApps.getAdapterItems().get(position).viewType;
-            int totalSpans = mGridLayoutMgr.getSpanCount();
-            if (isIconViewType(viewType)) {
-                return totalSpans / mAppsPerRow;
+            if (isIconViewType(mApps.getAdapterItems().get(position).viewType)) {
+                return 1;
             } else {
-                BaseAdapterProvider adapterProvider = getAdapterProvider(viewType);
-                if (adapterProvider != null) {
-                    return totalSpans / adapterProvider.getItemsPerRow(viewType, mAppsPerRow);
-                }
-
                 // Section breaks span the full width
-                return totalSpans;
+                return mAppsPerRow;
             }
         }
     }
 
-    private final BaseDraggingActivity mLauncher;
+    private final Launcher mLauncher;
     private final LayoutInflater mLayoutInflater;
     private final AlphabeticalAppsList mApps;
     private final GridLayoutManager mGridLayoutMgr;
     private final GridSpanSizer mGridSizer;
 
-    private final OnClickListener mOnIconClickListener;
-    private OnLongClickListener mOnIconLongClickListener = INSTANCE_ALL_APPS;
+    private final int mAppsPerRow;
 
-    private int mAppsPerRow;
-
+    private BindViewCallback mBindViewCallback;
     private OnFocusChangeListener mIconFocusListener;
 
     // The text to show when there are no search results and no market search handler.
-    protected String mEmptySearchMessage;
+    private String mEmptySearchMessage;
     // The intent to send off to the market app, updated each time the search query changes.
     private Intent mMarketSearchIntent;
 
-    private final int mExtraHeight;
-
-    public AllAppsGridAdapter(BaseDraggingActivity launcher, LayoutInflater inflater,
-            AlphabeticalAppsList apps, BaseAdapterProvider[] adapterProviders) {
+    public AllAppsGridAdapter(Launcher launcher, AlphabeticalAppsList apps) {
         Resources res = launcher.getResources();
         mLauncher = launcher;
         mApps = apps;
@@ -288,33 +209,10 @@ public class AllAppsGridAdapter extends
         mGridSizer = new GridSpanSizer();
         mGridLayoutMgr = new AppsGridLayoutManager(launcher);
         mGridLayoutMgr.setSpanSizeLookup(mGridSizer);
-        mLayoutInflater = inflater;
+        mLayoutInflater = LayoutInflater.from(launcher);
 
-        mOnIconClickListener = launcher.getItemOnClickListener();
-
-        mAdapterProviders = adapterProviders;
-        setAppsPerRow(mLauncher.getDeviceProfile().numShownAllAppsColumns);
-        mExtraHeight = launcher.getResources().getDimensionPixelSize(R.dimen.all_apps_height_extra);
-    }
-
-    public void setAppsPerRow(int appsPerRow) {
-        mAppsPerRow = appsPerRow;
-        int totalSpans = mAppsPerRow;
-        for (BaseAdapterProvider adapterProvider : mAdapterProviders) {
-            for (int itemPerRow : adapterProvider.getSupportedItemsPerRowArray()) {
-                if (totalSpans % itemPerRow != 0) {
-                    totalSpans *= itemPerRow;
-                }
-            }
-        }
-        mGridLayoutMgr.setSpanCount(totalSpans);
-    }
-
-    /**
-     * Sets the long click listener for icons
-     */
-    public void setOnIconLongClickListener(@Nullable OnLongClickListener listener) {
-        mOnIconLongClickListener = listener;
+        mAppsPerRow = mLauncher.getDeviceProfile().inv.numColsDrawer;
+        mGridLayoutMgr.setSpanCount(mAppsPerRow);
     }
 
     public static boolean isDividerViewType(int viewType) {
@@ -327,7 +225,7 @@ public class AllAppsGridAdapter extends
 
     public static boolean isViewType(int viewType, int viewTypeMask) {
         return (viewType & viewTypeMask) != 0;
-    }
+}
 
     public void setIconFocusListener(OnFocusChangeListener focusListener) {
         mIconFocusListener = focusListener;
@@ -344,6 +242,13 @@ public class AllAppsGridAdapter extends
     }
 
     /**
+     * Sets the callback for when views are bound.
+     */
+    public void setBindViewCallback(BindViewCallback cb) {
+        mBindViewCallback = cb;
+    }
+
+    /**
      * Returns the grid layout manager.
      */
     public GridLayoutManager getLayoutManager() {
@@ -354,19 +259,15 @@ public class AllAppsGridAdapter extends
     public ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
         switch (viewType) {
             case VIEW_TYPE_ICON:
-                int layout = !FeatureFlags.ENABLE_TWOLINE_ALLAPPS.get() ? R.layout.all_apps_icon
-                        : R.layout.all_apps_icon_twoline;
                 BubbleTextView icon = (BubbleTextView) mLayoutInflater.inflate(
-                        layout, parent, false);
-                icon.setLongPressTimeoutFactor(1f);
+                        R.layout.all_apps_icon, parent, false);
+                icon.setOnClickListener(ItemClickHandler.INSTANCE);
+                icon.setOnLongClickListener(ItemLongClickListener.INSTANCE_ALL_APPS);
+                icon.setLongPressTimeout(ViewConfiguration.getLongPressTimeout());
                 icon.setOnFocusChangeListener(mIconFocusListener);
-                icon.setOnClickListener(mOnIconClickListener);
-                icon.setOnLongClickListener(mOnIconLongClickListener);
-                // Ensure the all apps icon height matches the workspace icons in portrait mode.
+
+                // Ensure the all apps iconView height matches the workspace icons in portrait mode.
                 icon.getLayoutParams().height = mLauncher.getDeviceProfile().allAppsCellHeightPx;
-                if (FeatureFlags.ENABLE_TWOLINE_ALLAPPS.get()) {
-                    icon.getLayoutParams().height += mExtraHeight;
-                }
                 return new ViewHolder(icon);
             case VIEW_TYPE_EMPTY_SEARCH:
                 return new ViewHolder(mLayoutInflater.inflate(R.layout.all_apps_empty_search,
@@ -374,20 +275,31 @@ public class AllAppsGridAdapter extends
             case VIEW_TYPE_SEARCH_MARKET:
                 View searchMarketView = mLayoutInflater.inflate(R.layout.all_apps_search_market,
                         parent, false);
-                searchMarketView.setOnClickListener(v -> mLauncher.startActivitySafely(
-                        v, mMarketSearchIntent, null));
-                ((TextView) searchMarketView.findViewById(R.id.search_market_text))
-                        .setTextColor(Themes.getColorAccent(parent.getContext()));
+                searchMarketView.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        mLauncher.startActivitySafely(v, mMarketSearchIntent, null);
+                    }
+                });
                 return new ViewHolder(searchMarketView);
             case VIEW_TYPE_ALL_APPS_DIVIDER:
                 return new ViewHolder(mLayoutInflater.inflate(
                         R.layout.all_apps_divider, parent, false));
+            case VIEW_TYPE_WORK_TAB_FOOTER:
+                View footer = mLayoutInflater.inflate(R.layout.work_tab_footer, parent, false);
+                return new ViewHolder(footer);
+            case VIEW_TYPE_FOLDER:
+                FrameLayout layout = new FrameLayout(mLauncher);
+
+                ViewGroup.MarginLayoutParams lp = new ViewGroup.MarginLayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        mLauncher.getDeviceProfile().allAppsCellHeightPx);
+                layout.setLayoutParams(lp);
+                return new ViewHolder(layout);
+            case VIEW_TYPE_SEARCH_SUGGESTION:
+                return new ViewHolder(mLayoutInflater.inflate(R.layout.all_apps_search_suggestion, parent, false));
             default:
-                BaseAdapterProvider adapterProvider = getAdapterProvider(viewType);
-                if (adapterProvider != null) {
-                    return adapterProvider.onCreateViewHolder(mLayoutInflater, parent, viewType);
-                }
-                throw new RuntimeException("Unexpected view type" + viewType);
+                throw new RuntimeException("Unexpected view type");
         }
     }
 
@@ -395,14 +307,10 @@ public class AllAppsGridAdapter extends
     public void onBindViewHolder(ViewHolder holder, int position) {
         switch (holder.getItemViewType()) {
             case VIEW_TYPE_ICON:
-                AdapterItem adapterItem = mApps.getAdapterItems().get(position);
+                AppInfo info = mApps.getAdapterItems().get(position).appInfo;
                 BubbleTextView icon = (BubbleTextView) holder.itemView;
                 icon.reset();
-                if (adapterItem.itemInfo instanceof AppInfo) {
-                    icon.applyFromApplicationInfo((AppInfo) adapterItem.itemInfo);
-                } else {
-                    icon.applyFromItemInfoWithIcon(adapterItem.itemInfo);
-                }
+                icon.applyFromApplicationInfo(info);
                 break;
             case VIEW_TYPE_EMPTY_SEARCH:
                 TextView emptyViewText = (TextView) holder.itemView;
@@ -414,6 +322,9 @@ public class AllAppsGridAdapter extends
                 TextView searchView = (TextView) holder.itemView;
                 if (mMarketSearchIntent != null) {
                     searchView.setVisibility(View.VISIBLE);
+                    int accent = ColorEngine.getInstance(searchView.getContext())
+                            .getAccent();
+                    searchView.setTextColor(accent);
                 } else {
                     searchView.setVisibility(View.GONE);
                 }
@@ -421,17 +332,44 @@ public class AllAppsGridAdapter extends
             case VIEW_TYPE_ALL_APPS_DIVIDER:
                 // nothing to do
                 break;
-            default:
-                BaseAdapterProvider adapterProvider = getAdapterProvider(holder.getItemViewType());
-                if (adapterProvider != null) {
-                    adapterProvider.onBindView(holder, position);
-                }
-        }
-    }
+            case VIEW_TYPE_WORK_TAB_FOOTER:
+                WorkModeSwitch workModeToggle = holder.itemView.findViewById(R.id.work_mode_toggle);
+                workModeToggle.refresh();
+                TextView managedByLabel = holder.itemView.findViewById(R.id.managed_by_label);
+                boolean anyProfileQuietModeEnabled = UserManagerCompat.getInstance(
+                        managedByLabel.getContext()).isAnyProfileQuietModeEnabled();
+                managedByLabel.setText(anyProfileQuietModeEnabled
+                        ? R.string.work_mode_off_label : R.string.work_mode_on_label);
+                break;
+            case VIEW_TYPE_FOLDER:
+                ViewGroup container = (ViewGroup) holder.itemView;
+                FolderIcon folderIcon = mApps.getAdapterItems().get(position)
+                        .folderItem.getFolderIcon(mLauncher, container);
 
-    @Override
-    public void onViewRecycled(@NonNull ViewHolder holder) {
-        super.onViewRecycled(holder);
+                container.removeAllViews();
+                container.addView(folderIcon);
+
+                folderIcon.verifyHighRes();
+                break;
+            case VIEW_TYPE_SEARCH_SUGGESTION:
+                int color = getDrawerTextColor();
+                ViewGroup group = (ViewGroup) holder.itemView;
+                TextView textView = group.findViewById(R.id.suggestion);
+                String suggestion = mApps.getAdapterItems().get(position).suggestion;
+                textView.setText(suggestion);
+                textView.setTextColor(color);
+                ((ImageView) group.findViewById(android.R.id.icon)).getDrawable().setTint(color);
+                group.setOnClickListener(v -> {
+                    SearchProvider provider = getSearchProvider();
+                    if (provider instanceof WebSearchProvider) {
+                        ((WebSearchProvider) provider).openResults(suggestion);
+                    }
+                });
+                break;
+        }
+        if (mBindViewCallback != null) {
+            mBindViewCallback.onBindView(holder);
+        }
     }
 
     @Override
@@ -447,14 +385,17 @@ public class AllAppsGridAdapter extends
 
     @Override
     public int getItemViewType(int position) {
-        AdapterItem item = mApps.getAdapterItems().get(position);
+        AlphabeticalAppsList.AdapterItem item = mApps.getAdapterItems().get(position);
         return item.viewType;
     }
 
-    @Nullable
-    private BaseAdapterProvider getAdapterProvider(int viewType) {
-        return Arrays.stream(mAdapterProviders).filter(
-                adapterProvider -> adapterProvider.isViewSupported(viewType)).findFirst().orElse(
-                null);
+    public int getDrawerTextColor() {
+        return ColorEngine.getInstance(mLauncher).getResolver(Resolvers.ALLAPPS_ICON_LABEL).resolveColor();
     }
+
+
+    private SearchProvider getSearchProvider() {
+        return SearchProviderController.Companion.getInstance(mLauncher).getSearchProvider();
+    }
+
 }

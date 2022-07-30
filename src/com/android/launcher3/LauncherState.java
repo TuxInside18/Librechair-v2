@@ -15,40 +15,30 @@
  */
 package com.android.launcher3;
 
+import static android.view.View.IMPORTANT_FOR_ACCESSIBILITY_AUTO;
+import static android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS;
+import static android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
 import static com.android.launcher3.anim.Interpolators.ACCEL_2;
-import static com.android.launcher3.logging.StatsLogManager.LAUNCHER_STATE_HOME;
-import static com.android.launcher3.logging.StatsLogManager.LAUNCHER_STATE_OVERVIEW;
-import static com.android.launcher3.testing.TestProtocol.ALL_APPS_STATE_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.BACKGROUND_APP_STATE_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.HINT_STATE_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.HINT_STATE_TWO_BUTTON_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.NORMAL_STATE_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.OVERVIEW_MODAL_TASK_STATE_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.OVERVIEW_SPLIT_SELECT_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.OVERVIEW_STATE_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.QUICK_SWITCH_STATE_ORDINAL;
-import static com.android.launcher3.testing.TestProtocol.SPRING_LOADED_STATE_ORDINAL;
+import static com.android.launcher3.states.RotationHelper.REQUEST_NONE;
 
-import android.content.Context;
-import android.graphics.Color;
+import android.graphics.Rect;
 import android.view.animation.Interpolator;
-
-import com.android.launcher3.statemanager.BaseState;
-import com.android.launcher3.statemanager.StateManager;
-import com.android.launcher3.states.HintState;
+import ch.deletescape.lawnchair.states.HomeState;
+import ch.deletescape.lawnchair.states.OptionsState;
 import com.android.launcher3.states.SpringLoadedState;
-import com.android.launcher3.testing.TestProtocol;
-import com.android.launcher3.uioverrides.states.AllAppsState;
-import com.android.launcher3.uioverrides.states.OverviewState;
-
+import com.android.launcher3.uioverrides.AllAppsState;
+import com.android.launcher3.uioverrides.FastOverviewState;
+import com.android.launcher3.uioverrides.OverviewState;
+import com.android.launcher3.uioverrides.UiFactory;
+import com.android.launcher3.userevent.nano.LauncherLogProto.ContainerType;
 import java.util.Arrays;
 
-import app.lawnchair.LawnchairLauncher;
 
 /**
  * Base state for various states used for the Launcher
  */
-public abstract class LauncherState implements BaseState<LauncherState> {
+public class LauncherState {
+
 
     /**
      * Set of elements indicating various workspace elements which change visibility across states
@@ -56,34 +46,23 @@ public abstract class LauncherState implements BaseState<LauncherState> {
      */
     public static final int NONE = 0;
     public static final int HOTSEAT_ICONS = 1 << 0;
-    public static final int ALL_APPS_CONTENT = 1 << 1;
-    public static final int VERTICAL_SWIPE_INDICATOR = 1 << 2;
-    public static final int OVERVIEW_ACTIONS = 1 << 3;
-    public static final int CLEAR_ALL_BUTTON = 1 << 4;
-    public static final int WORKSPACE_PAGE_INDICATOR = 1 << 5;
-    public static final int SPLIT_PLACHOLDER_VIEW = 1 << 6;
+    public static final int HOTSEAT_SEARCH_BOX = 1 << 1;
+    public static final int ALL_APPS_HEADER = 1 << 2;
+    public static final int ALL_APPS_HEADER_EXTRA = 1 << 3; // e.g. app predictions
+    public static final int ALL_APPS_CONTENT = 1 << 4;
+    public static final int VERTICAL_SWIPE_INDICATOR = 1 << 5;
+    public static final int OPTIONS_VIEW = 1 << 6;
 
-    // Flag indicating workspace has multiple pages visible.
-    public static final int FLAG_MULTI_PAGE = BaseState.getFlag(0);
-    // Flag indicating that workspace and its contents are not accessible
-    public static final int FLAG_WORKSPACE_INACCESSIBLE = BaseState.getFlag(1);
-
-    // Flag indicating the state allows workspace icons to be dragged.
-    public static final int FLAG_WORKSPACE_ICONS_CAN_BE_DRAGGED = BaseState.getFlag(2);
-    // Flag to indicate that workspace should draw page background
-    public static final int FLAG_WORKSPACE_HAS_BACKGROUNDS = BaseState.getFlag(3);
-    // True if the back button should be hidden when in this state (assuming no floating views are
-    // open, launcher has window focus, etc).
-    public static final int FLAG_HIDE_BACK_BUTTON = BaseState.getFlag(4);
-    // Flag to indicate if the state would have scrim over sysui region: statu sbar and nav bar
-    public static final int FLAG_HAS_SYS_UI_SCRIM = BaseState.getFlag(5);
-    // Flag to inticate that all popups should be closed when this state is enabled.
-    public static final int FLAG_CLOSE_POPUPS = BaseState.getFlag(6);
-    public static final int FLAG_OVERVIEW_UI = BaseState.getFlag(7);
-
-
-    public static final float NO_OFFSET = 0;
-    public static final float NO_SCALE = 1;
+    protected static final int FLAG_MULTI_PAGE = 1 << 0;
+    protected static final int FLAG_DISABLE_ACCESSIBILITY = 1 << 1;
+    protected static final int FLAG_DISABLE_RESTORE = 1 << 2;
+    protected static final int FLAG_WORKSPACE_ICONS_CAN_BE_DRAGGED = 1 << 3;
+    protected static final int FLAG_DISABLE_PAGE_CLIPPING = 1 << 4;
+    protected static final int FLAG_PAGE_BACKGROUNDS = 1 << 5;
+    protected static final int FLAG_DISABLE_INTERACTION = 1 << 6;
+    protected static final int FLAG_OVERVIEW_UI = 1 << 7;
+    protected static final int FLAG_HIDE_BACK_BUTTON = 1 << 8;
+    protected static final int FLAG_HAS_SYS_UI_SCRIM = 1 << 9;
 
     protected static final PageAlphaProvider DEFAULT_ALPHA_PROVIDER =
             new PageAlphaProvider(ACCEL_2) {
@@ -93,127 +72,137 @@ public abstract class LauncherState implements BaseState<LauncherState> {
                 }
             };
 
-    private static final LauncherState[] sAllStates = new LauncherState[10];
+    private static final LauncherState[] sAllStates = new LauncherState[7];
 
     /**
      * TODO: Create a separate class for NORMAL state.
      */
-    public static final LauncherState NORMAL = new LauncherState(NORMAL_STATE_ORDINAL,
-            LAUNCHER_STATE_HOME,
+    public static final LauncherState NORMAL = new HomeState(0, ContainerType.WORKSPACE, 0,
             FLAG_DISABLE_RESTORE | FLAG_WORKSPACE_ICONS_CAN_BE_DRAGGED | FLAG_HIDE_BACK_BUTTON |
-                    FLAG_HAS_SYS_UI_SCRIM) {
-        @Override
-        public int getTransitionDuration(Context context) {
-            // Arbitrary duration, when going to NORMAL we use the state we're coming from instead.
-            return 0;
-        }
-
-        @Override
-        public void onBackPressed(Launcher launcher) {
-            if (launcher instanceof LawnchairLauncher) {
-                ((LawnchairLauncher) launcher).getGestureController().onBackPressed();
-            }
-            super.onBackPressed(launcher);
-        }
-    };
+            FLAG_HAS_SYS_UI_SCRIM);
 
     /**
      * Various Launcher states arranged in the increasing order of UI layers
      */
-    public static final LauncherState SPRING_LOADED = new SpringLoadedState(
-            SPRING_LOADED_STATE_ORDINAL);
-    public static final LauncherState ALL_APPS = new AllAppsState(ALL_APPS_STATE_ORDINAL);
-    public static final LauncherState HINT_STATE = new HintState(HINT_STATE_ORDINAL);
-    public static final LauncherState HINT_STATE_TWO_BUTTON = new HintState(
-            HINT_STATE_TWO_BUTTON_ORDINAL, LAUNCHER_STATE_OVERVIEW);
+    public static final LauncherState SPRING_LOADED = new SpringLoadedState(1);
+    public static final LauncherState OVERVIEW = new OverviewState(2);
+    public static final LauncherState FAST_OVERVIEW = new FastOverviewState(3);
+    public static final LauncherState ALL_APPS = new AllAppsState(4);
+    public static final LauncherState OPTIONS = new OptionsState(5);
+    public static final LauncherState NEWS_OVERLAY = new LauncherState(6, ContainerType.WORKSPACE, 0, FLAG_DISABLE_RESTORE | FLAG_WORKSPACE_ICONS_CAN_BE_DRAGGED);
 
-    public static final LauncherState OVERVIEW = new OverviewState(OVERVIEW_STATE_ORDINAL);
-    public static final LauncherState OVERVIEW_MODAL_TASK = OverviewState.newModalTaskState(
-            OVERVIEW_MODAL_TASK_STATE_ORDINAL);
-    public static final LauncherState QUICK_SWITCH =
-            OverviewState.newSwitchState(QUICK_SWITCH_STATE_ORDINAL);
-    public static final LauncherState BACKGROUND_APP =
-            OverviewState.newBackgroundState(BACKGROUND_APP_STATE_ORDINAL);
-    public static final LauncherState OVERVIEW_SPLIT_SELECT =
-            OverviewState.newSplitSelectState(OVERVIEW_SPLIT_SELECT_ORDINAL);
+    protected static final Rect sTempRect = new Rect();
 
     public final int ordinal;
 
     /**
-     * Used for {@link com.android.launcher3.logging.StatsLogManager}
+     * Used for containerType in {@link com.android.launcher3.logging.UserEventDispatcher}
      */
-    public final int statsLogOrdinal;
+    public final int containerType;
+
+    /**
+     * True if the state can be persisted across activity restarts.
+     */
+    public final boolean disableRestore;
+
+    /**
+     * True if workspace has multiple pages visible.
+     */
+    public final boolean hasMultipleVisiblePages;
+
+    /**
+     * Accessibility flag for workspace and its pages.
+     * @see android.view.View#setImportantForAccessibility(int)
+     */
+    public final int workspaceAccessibilityFlag;
+
+    /**
+     * Properties related to state transition animation
+     *
+     * @see WorkspaceStateTransitionAnimation
+     */
+    public final boolean hasWorkspacePageBackground;
+
+    public final int transitionDuration;
+
+    /**
+     * True if the state allows workspace icons to be dragged.
+     */
+    public final boolean workspaceIconsCanBeDragged;
+
+    /**
+     * True if the workspace pages should not be clipped relative to the workspace bounds
+     * for this state.
+     */
+    public final boolean disablePageClipping;
+
+    /**
+     * True if launcher can not be directly interacted in this state;
+     */
+    public final boolean disableInteraction;
 
     /**
      * True if the state has overview panel visible.
      */
     public final boolean overviewUi;
 
-    private final int mFlags;
+    /**
+     * True if the back button should be hidden when in this state (assuming no floating views are
+     * open, launcher has window focus, etc).
+     */
+    public final boolean hideBackButton;
 
-    public LauncherState(int id, int statsLogOrdinal, int flags) {
-        this.statsLogOrdinal = statsLogOrdinal;
-        this.mFlags = flags;
+    public final boolean hasSysUiScrim;
+
+    public LauncherState(int id, int containerType, int transitionDuration, int flags) {
+        this.containerType = containerType;
+        this.transitionDuration = transitionDuration;
+
+        this.hasWorkspacePageBackground = (flags & FLAG_PAGE_BACKGROUNDS) != 0;
+        this.hasMultipleVisiblePages = (flags & FLAG_MULTI_PAGE) != 0;
+        this.workspaceAccessibilityFlag = (flags & FLAG_DISABLE_ACCESSIBILITY) != 0
+                ? IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                : IMPORTANT_FOR_ACCESSIBILITY_AUTO;
+        this.disableRestore = (flags & FLAG_DISABLE_RESTORE) != 0;
+        this.workspaceIconsCanBeDragged = (flags & FLAG_WORKSPACE_ICONS_CAN_BE_DRAGGED) != 0;
+        this.disablePageClipping = (flags & FLAG_DISABLE_PAGE_CLIPPING) != 0;
+        this.disableInteraction = (flags & FLAG_DISABLE_INTERACTION) != 0;
         this.overviewUi = (flags & FLAG_OVERVIEW_UI) != 0;
+        this.hideBackButton = (flags & FLAG_HIDE_BACK_BUTTON) != 0;
+        this.hasSysUiScrim = (flags & FLAG_HAS_SYS_UI_SCRIM) != 0;
+
         this.ordinal = id;
         sAllStates[id] = this;
-    }
-
-    /**
-     * Returns if the state has the provided flag
-     */
-    @Override
-    public final boolean hasFlag(int mask) {
-        return (mFlags & mask) != 0;
     }
 
     public static LauncherState[] values() {
         return Arrays.copyOf(sAllStates, sAllStates.length);
     }
 
-    public ScaleAndTranslation getWorkspaceScaleAndTranslation(Launcher launcher) {
-        return new ScaleAndTranslation(NO_SCALE, NO_OFFSET, NO_OFFSET);
-    }
-
-    public ScaleAndTranslation getHotseatScaleAndTranslation(Launcher launcher) {
-        // For most states, treat the hotseat as if it were part of the workspace.
-        return getWorkspaceScaleAndTranslation(launcher);
+    public float[] getWorkspaceScaleAndTranslation(Launcher launcher) {
+        return new float[] {1, 0, 0};
     }
 
     /**
-     * Returns an array of two elements.
-     * The first specifies the scale for the overview
-     * The second is the factor ([0, 1], 0 => center-screen; 1 => offscreen) by which overview
-     * should be shifted horizontally.
+     * Returns 2 floats designating how to transition overview:
+     *   scale for the current and adjacent pages
+     *   translationY factor where 0 is top aligned and 0.5 is centered vertically
      */
-    public float[] getOverviewScaleAndOffset(Launcher launcher) {
-        return launcher.getNormalOverviewScaleAndOffset();
+    public float[] getOverviewScaleAndTranslationYFactor(Launcher launcher) {
+        return new float[] {1.1f, 0f};
     }
 
-    public float getOverviewFullscreenProgress() {
-        return 0;
+    public void onStateEnabled(Launcher launcher) {
+        dispatchWindowStateChanged(launcher);
     }
+
+    public void onStateDisabled(Launcher launcher) { }
 
     public int getVisibleElements(Launcher launcher) {
-        return HOTSEAT_ICONS | WORKSPACE_PAGE_INDICATOR | VERTICAL_SWIPE_INDICATOR;
-    }
-
-    /**
-     * A shorthand for checking getVisibleElements() & elements == elements.
-     * @return Whether all of the given elements are visible.
-     */
-    public boolean areElementsVisible(Launcher launcher, int elements) {
-        return (getVisibleElements(launcher) & elements) == elements;
-    }
-
-    /** Returns whether taskbar is stashed and thus should replace hotseat with a handle */
-    public boolean isTaskbarStashed(Launcher launcher) {
-        return false;
-    }
-
-    /** Returns whether taskbar is aligned with the hotseat vs position inside apps */
-    public boolean isTaskbarAlignedWithHotseat(Launcher launcher) {
-        return !isTaskbarStashed(launcher);
+        if (launcher.getDeviceProfile().isVerticalBarLayout()) {
+            return HOTSEAT_ICONS | VERTICAL_SWIPE_INDICATOR;
+        }
+        return HOTSEAT_ICONS | HOTSEAT_SEARCH_BOX | VERTICAL_SWIPE_INDICATOR;
     }
 
     /**
@@ -225,59 +214,16 @@ public abstract class LauncherState implements BaseState<LauncherState> {
         return 1f;
     }
 
-    public float getWorkspaceBackgroundAlpha(Launcher launcher) {
+    public float getScrimProgress(Launcher launcher) {
+        return getVerticalProgress(launcher);
+    }
+
+    public float getWorkspaceScrimAlpha(Launcher launcher) {
         return 0;
     }
 
-    /**
-     * What color should the workspace scrim be in when at rest in this state.
-     * Return {@link Color#TRANSPARENT} for no scrim.
-     */
-    public int getWorkspaceScrimColor(Launcher launcher) {
-        return Color.TRANSPARENT;
-    }
-
-    /**
-     * For this state, how modal should over view been shown. 0 modalness means all tasks drawn,
-     * 1 modalness means the current task is show on its own.
-     */
-    public float getOverviewModalness() {
+    public float getWorkspaceBlurAlpha(Launcher launcher) {
         return 0;
-    }
-
-    /**
-     * For this state, how much additional translation there should be for each of the
-     * child TaskViews. Note that the translation can be its primary or secondary dimension.
-     */
-    public float getSplitSelectTranslation(Launcher launcher) {
-        return 0;
-    }
-
-    /**
-     * The amount of blur and wallpaper zoom to apply to the background of either the app
-     * or Launcher surface in this state. Should be a number between 0 and 1, inclusive.
-     *
-     * 0 means completely zoomed in, without blurs. 1 is zoomed out, with blurs.
-     */
-    public final float getDepth(Context context) {
-        return getDepth(context,
-                BaseDraggingActivity.fromContext(context).getDeviceProfile().isMultiWindowMode);
-    }
-
-    /**
-     * Returns the amount of blur and wallpaper zoom for this state with {@param isMultiWindowMode}.
-     *
-     * @see #getDepth(Context).
-     */
-    public final float getDepth(Context context, boolean isMultiWindowMode) {
-        if (isMultiWindowMode) {
-            return 0;
-        }
-        return getDepthUnchecked(context);
-    }
-
-    protected float getDepthUnchecked(Context context) {
-        return 0f;
     }
 
     public String getDescription(Launcher launcher) {
@@ -285,36 +231,38 @@ public abstract class LauncherState implements BaseState<LauncherState> {
     }
 
     public PageAlphaProvider getWorkspacePageAlphaProvider(Launcher launcher) {
-        if ((this != NORMAL && this != HINT_STATE)
-                || !launcher.getDeviceProfile().shouldFadeAdjacentWorkspaceScreens()) {
+        if (this != NORMAL || !launcher.getDeviceProfile().shouldFadeAdjacentWorkspaceScreens()) {
             return DEFAULT_ALPHA_PROVIDER;
         }
         final int centerPage = launcher.getWorkspace().getNextPage();
         return new PageAlphaProvider(ACCEL_2) {
             @Override
             public float getPageAlpha(int pageIndex) {
-                return pageIndex != centerPage ? 0 : 1f;
+                return  pageIndex != centerPage ? 0 : 1f;
             }
         };
     }
 
-    @Override
     public LauncherState getHistoryForState(LauncherState previousState) {
         // No history is supported
         return NORMAL;
     }
 
-    @Override
-    public String toString() {
-        return TestProtocol.stateOrdinalToString(ordinal);
+    /**
+     * Called when the start transition ends and the user settles on this particular state.
+     */
+    public void onStateTransitionEnd(Launcher launcher) {
+        if (this == NORMAL || this == SPRING_LOADED) {
+            UiFactory.resetOverview(launcher);
+        }
+        if (this == NORMAL) {
+            // Clear any rotation locks when going to normal state
+            launcher.getRotationHelper().setCurrentStateRequest(REQUEST_NONE);
+        }
     }
 
-    public void onBackPressed(Launcher launcher) {
-        if (this != NORMAL) {
-            StateManager<LauncherState> lsm = launcher.getStateManager();
-            LauncherState lastState = lsm.getLastState();
-            lsm.goToState(lastState);
-        }
+    protected static void dispatchWindowStateChanged(Launcher launcher) {
+        launcher.getWindow().getDecorView().sendAccessibilityEvent(TYPE_WINDOW_STATE_CHANGED);
     }
 
     public static abstract class PageAlphaProvider {
@@ -326,17 +274,5 @@ public abstract class LauncherState implements BaseState<LauncherState> {
         }
 
         public abstract float getPageAlpha(int pageIndex);
-    }
-
-    public static class ScaleAndTranslation {
-        public float scale;
-        public float translationX;
-        public float translationY;
-
-        public ScaleAndTranslation(float scale, float translationX, float translationY) {
-            this.scale = scale;
-            this.translationX = translationX;
-            this.translationY = translationY;
-        }
     }
 }

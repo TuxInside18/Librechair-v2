@@ -16,9 +16,6 @@
 
 package com.android.launcher3.dragndrop;
 
-
-import static com.android.launcher3.LauncherSettings.Favorites.CONTAINER_PIN_WIDGETS;
-
 import android.annotation.TargetApi;
 import android.appwidget.AppWidgetManager;
 import android.content.pm.LauncherApps.PinItemRequest;
@@ -31,9 +28,12 @@ import android.view.View;
 import android.widget.RemoteViews;
 
 import com.android.launcher3.DragSource;
+import com.android.launcher3.ItemInfo;
 import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAppWidgetProviderInfo;
 import com.android.launcher3.PendingAddItemInfo;
-import com.android.launcher3.widget.LauncherAppWidgetProviderInfo;
+import com.android.launcher3.uioverrides.UiFactory;
+import com.android.launcher3.userevent.nano.LauncherLogProto;
 import com.android.launcher3.widget.PendingAddShortcutInfo;
 import com.android.launcher3.widget.PendingAddWidgetInfo;
 import com.android.launcher3.widget.PendingItemDragHelper;
@@ -48,19 +48,12 @@ public class PinItemDragListener extends BaseItemDragListener {
 
     private final PinItemRequest mRequest;
     private final CancellationSignal mCancelSignal;
-    private final float mPreviewScale;
 
     public PinItemDragListener(PinItemRequest request, Rect previewRect,
             int previewBitmapWidth, int previewViewWidth) {
-        this(request, previewRect, previewBitmapWidth, previewViewWidth, /* previewScale= */ 1f);
-    }
-
-    public PinItemDragListener(PinItemRequest request, Rect previewRect,
-            int previewBitmapWidth, int previewViewWidth, float previewScale) {
         super(previewRect, previewBitmapWidth, previewViewWidth);
         mRequest = request;
         mCancelSignal = new CancellationSignal();
-        mPreviewScale = previewScale;
     }
 
     @Override
@@ -75,7 +68,7 @@ public class PinItemDragListener extends BaseItemDragListener {
     public boolean init(Launcher launcher, boolean alreadyOnHome) {
         super.init(launcher, alreadyOnHome);
         if (!alreadyOnHome) {
-            launcher.useFadeOutAnimationForLauncherStart(mCancelSignal);
+            UiFactory.useFadeOutAnimationForLauncherStart(launcher, mCancelSignal);
         }
         return false;
     }
@@ -93,7 +86,7 @@ public class PinItemDragListener extends BaseItemDragListener {
                             mLauncher, mRequest.getAppWidgetProviderInfo(mLauncher));
             final PinWidgetFlowHandler flowHandler =
                     new PinWidgetFlowHandler(providerInfo, mRequest);
-            item = new PendingAddWidgetInfo(providerInfo, CONTAINER_PIN_WIDGETS) {
+            item = new PendingAddWidgetInfo(providerInfo) {
                 @Override
                 public WidgetAddFlowHandler getHandler() {
                     return flowHandler;
@@ -105,9 +98,15 @@ public class PinItemDragListener extends BaseItemDragListener {
 
         PendingItemDragHelper dragHelper = new PendingItemDragHelper(view);
         if (mRequest.getRequestType() == PinItemRequest.REQUEST_TYPE_APPWIDGET) {
-            dragHelper.setRemoteViewsPreview(getPreview(mRequest), mPreviewScale);
+            dragHelper.setPreview(getPreview(mRequest));
         }
         return dragHelper;
+    }
+
+    @Override
+    public void fillInLogContainerData(View v, ItemInfo info, LauncherLogProto.Target target,
+            LauncherLogProto.Target targetParent) {
+        targetParent.containerType = LauncherLogProto.ContainerType.PINITEM;
     }
 
     @Override

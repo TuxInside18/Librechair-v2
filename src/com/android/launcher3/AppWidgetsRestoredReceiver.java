@@ -1,7 +1,5 @@
 package com.android.launcher3;
 
-import static android.os.Process.myUserHandle;
-
 import android.appwidget.AppWidgetHost;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProviderInfo;
@@ -10,18 +8,15 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
+import android.os.Handler;
+import androidx.annotation.WorkerThread;
 import android.util.Log;
 
-import androidx.annotation.WorkerThread;
-
 import com.android.launcher3.LauncherSettings.Favorites;
+import com.android.launcher3.config.FeatureFlags;
 import com.android.launcher3.model.LoaderTask;
-import com.android.launcher3.model.WidgetsModel;
-import com.android.launcher3.model.data.LauncherAppWidgetInfo;
-import com.android.launcher3.pm.UserCache;
 import com.android.launcher3.provider.RestoreDbTask;
 import com.android.launcher3.util.ContentWriter;
-import com.android.launcher3.widget.LauncherAppWidgetHost;
 
 public class AppWidgetsRestoredReceiver extends BroadcastReceiver {
 
@@ -38,8 +33,16 @@ public class AppWidgetsRestoredReceiver extends BroadcastReceiver {
 
             final int[] oldIds = intent.getIntArrayExtra(AppWidgetManager.EXTRA_APPWIDGET_OLD_IDS);
             final int[] newIds = intent.getIntArrayExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS);
-            if (oldIds != null && newIds != null && oldIds.length == newIds.length) {
-                RestoreDbTask.setRestoredAppWidgetIds(context, oldIds, newIds);
+            if (oldIds.length == newIds.length) {
+                final PendingResult asyncResult = goAsync();
+                new Handler(LauncherModel.getWorkerLooper())
+                        .postAtFrontOfQueue(new Runnable() {
+                            @Override
+                            public void run() {
+                                restoreAppWidgetIds(context, oldIds, newIds);
+                                asyncResult.finish();
+                            }
+                        });
             } else {
                 Log.e(TAG, "Invalid host restored received");
             }
@@ -50,9 +53,9 @@ public class AppWidgetsRestoredReceiver extends BroadcastReceiver {
      * Updates the app widgets whose id has changed during the restore process.
      */
     @WorkerThread
-    public static void restoreAppWidgetIds(Context context, int[] oldWidgetIds, int[] newWidgetIds) {
+    static void restoreAppWidgetIds(Context context, int[] oldWidgetIds, int[] newWidgetIds) {
         AppWidgetHost appWidgetHost = new LauncherAppWidgetHost(context);
-        if (WidgetsModel.GO_DISABLE_WIDGETS) {
+        if (FeatureFlags.GO_DISABLE_WIDGETS) {
             Log.e(TAG, "Skipping widget ID remap as widgets not supported");
             appWidgetHost.deleteHost();
             return;
@@ -82,21 +85,17 @@ public class AppWidgetsRestoredReceiver extends BroadcastReceiver {
                 state = LauncherAppWidgetInfo.FLAG_PROVIDER_NOT_READY;
             }
 
-            // b/135926478: Work profile widget restore is broken in platform. This forces us to
-            // recreate the widget during loading with the correct host provider.
-            long mainProfileId = UserCache.INSTANCE.get(context)
-                    .getSerialNumberForUser(myUserHandle());
-            String oldWidgetId = Integer.toString(oldWidgetIds[i]);
-            final String where = "appWidgetId=? and (restored & 1) = 1 and profileId=?";
-            final String[] args = new String[] { oldWidgetId, Long.toString(mainProfileId) };
-            int result = new ContentWriter(context, new ContentWriter.CommitParams(where, args))
+            String[] widgetIdParams = new String[] { Integer.toString(oldWidgetIds[i]) };
+            int result = new ContentWriter(context, new ContentWriter.CommitParams(
+                    "appWidgetId=? and (restored & 1) = 1", widgetIdParams))
                     .put(LauncherSettings.Favorites.APPWIDGET_ID, newWidgetIds[i])
                     .put(LauncherSettings.Favorites.RESTORED, state)
                     .commit();
+
             if (result == 0) {
                 Cursor cursor = cr.query(Favorites.CONTENT_URI,
                         new String[] {Favorites.APPWIDGET_ID},
-                        "appWidgetId=?", new String[] { oldWidgetId }, null);
+                        "appWidgetId=?", widgetIdParams, null);
                 try {
                     if (!cursor.moveToFirst()) {
                         // The widget no long exists.
@@ -106,12 +105,6 @@ public class AppWidgetsRestoredReceiver extends BroadcastReceiver {
                     cursor.close();
                 }
             }
-            // attempt to update widget id in backup table as well
-            new ContentWriter(context, ContentWriter.CommitParams.backupCommitParams(
-                    "appWidgetId=? and profileId=?", args))
-                    .put(LauncherSettings.Favorites.APPWIDGET_ID, newWidgetIds[i])
-                    .put(LauncherSettings.Favorites.RESTORED, state)
-                    .commit();
         }
 
         LauncherAppState app = LauncherAppState.getInstanceNoCreate();

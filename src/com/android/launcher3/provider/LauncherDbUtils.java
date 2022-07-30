@@ -16,66 +16,112 @@
 
 package com.android.launcher3.provider;
 
+import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteDatabase;
-import android.os.Binder;
-import android.os.Process;
+import android.util.Log;
 
+import com.android.launcher3.LauncherAppState;
 import com.android.launcher3.LauncherSettings.Favorites;
-import com.android.launcher3.pm.UserCache;
-import com.android.launcher3.util.IntArray;
+import com.android.launcher3.LauncherSettings.WorkspaceScreens;
+
+import java.util.ArrayList;
+import java.util.Collection;
 
 /**
  * A set of utility methods for Launcher DB used for DB updates and migration.
  */
 public class LauncherDbUtils {
 
-    public static IntArray queryIntArray(boolean distinct, SQLiteDatabase db, String tableName,
-            String columnName, String selection, String groupBy, String orderBy) {
-        IntArray out = new IntArray();
-        try (Cursor c = db.query(distinct, tableName, new String[] { columnName }, selection, null,
-                groupBy, null, orderBy, null)) {
-            while (c.moveToNext()) {
-                out.add(c.getInt(0));
+    private static final String TAG = "LauncherDbUtils";
+
+    /**
+     * Makes the first screen as screen 0 (if screen 0 already exists,
+     * renames it to some other number).
+     * If the first row of screen 0 is non empty, runs a 'lossy' GridMigrationTask to clear
+     * the first row. The items in the first screen are moved and resized but the carry-forward
+     * items are simply deleted.
+     */
+    public static boolean prepareScreenZeroToHostQsb(Context context, SQLiteDatabase db) {
+        try (SQLiteTransaction t = new SQLiteTransaction(db)) {
+            // Get the existing screens
+            ArrayList<Long> screenIds = getScreenIdsFromCursor(db.query(WorkspaceScreens.TABLE_NAME,
+                    null, null, null, null, null, WorkspaceScreens.SCREEN_RANK));
+
+            if (screenIds.isEmpty()) {
+                // No update needed
+                t.commit();
+                return true;
             }
+            if (screenIds.get(0) != 0) {
+                // First screen is not 0, we need to rename screens
+                if (screenIds.indexOf(0L) > -1) {
+                    // There is already a screen 0. First rename it to a different screen.
+                    long newScreenId = 1;
+                    while (screenIds.indexOf(newScreenId) > -1) newScreenId++;
+                    renameScreen(db, 0, newScreenId);
+                }
+
+                // Rename the first screen to 0.
+                renameScreen(db, screenIds.get(0), 0);
+            }
+
+            // Check if the first row is empty
+            if (DatabaseUtils.queryNumEntries(db, Favorites.TABLE_NAME,
+                    "container = -100 and screen = 0 and cellY = 0") == 0) {
+                // First row is empty, no need to migrate.
+                t.commit();
+                return true;
+            }
+
+            new LossyScreenMigrationTask(context, LauncherAppState.getIDP(context), db)
+                    .migrateScreen0();
+            t.commit();
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to update workspace size", e);
+            return false;
+        }
+    }
+
+    private static void renameScreen(SQLiteDatabase db, long oldScreen, long newScreen) {
+        String[] whereParams = new String[] { Long.toString(oldScreen) };
+
+        ContentValues values = new ContentValues();
+        values.put(WorkspaceScreens._ID, newScreen);
+        db.update(WorkspaceScreens.TABLE_NAME, values, "_id = ?", whereParams);
+
+        values.clear();
+        values.put(Favorites.SCREEN, newScreen);
+        db.update(Favorites.TABLE_NAME, values, "container = -100 and screen = ?", whereParams);
+    }
+
+    /**
+     * Parses the cursor containing workspace screens table and returns the list of screen IDs
+     */
+    public static ArrayList<Long> getScreenIdsFromCursor(Cursor sc) {
+        try {
+            return iterateCursor(sc,
+                    sc.getColumnIndexOrThrow(WorkspaceScreens._ID),
+                    new ArrayList<Long>());
+        } finally {
+            sc.close();
+        }
+    }
+
+    public static <T extends Collection<Long>> T iterateCursor(Cursor c, int columnIndex, T out) {
+        while (c.moveToNext()) {
+            out.add(c.getLong(columnIndex));
         }
         return out;
-    }
-
-    public static boolean tableExists(SQLiteDatabase db, String tableName) {
-        try (Cursor c = db.query(true, "sqlite_master", new String[] {"tbl_name"},
-                "tbl_name = ?", new String[] {tableName},
-                null, null, null, null, null)) {
-            return c.getCount() > 0;
-        }
-    }
-
-    public static void dropTable(SQLiteDatabase db, String tableName) {
-        db.execSQL("DROP TABLE IF EXISTS " + tableName);
-    }
-
-    /** Copy fromTable in fromDb to toTable in toDb. */
-    public static void copyTable(SQLiteDatabase fromDb, String fromTable, SQLiteDatabase toDb,
-            String toTable, Context context) {
-        long userSerial = UserCache.INSTANCE.get(context).getSerialNumberForUser(
-                Process.myUserHandle());
-        dropTable(toDb, toTable);
-        Favorites.addTableToDb(toDb, userSerial, false, toTable);
-        if (fromDb != toDb) {
-            toDb.execSQL("ATTACH DATABASE '" + fromDb.getPath() + "' AS from_db");
-            toDb.execSQL(
-                    "INSERT INTO " + toTable + " SELECT * FROM from_db." + fromTable);
-            toDb.execSQL("DETACH DATABASE 'from_db'");
-        } else {
-            toDb.execSQL("INSERT INTO " + toTable + " SELECT * FROM " + fromTable);
-        }
     }
 
     /**
      * Utility class to simplify managing sqlite transactions
      */
-    public static class SQLiteTransaction extends Binder implements AutoCloseable {
+    public static class SQLiteTransaction implements AutoCloseable {
         private final SQLiteDatabase mDb;
 
         public SQLiteTransaction(SQLiteDatabase db) {
@@ -90,10 +136,6 @@ public class LauncherDbUtils {
         @Override
         public void close() {
             mDb.endTransaction();
-        }
-
-        public SQLiteDatabase getDb() {
-            return mDb;
         }
     }
 }

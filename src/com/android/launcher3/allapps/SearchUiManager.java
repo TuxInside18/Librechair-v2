@@ -17,10 +17,6 @@ package com.android.launcher3.allapps;
 
 import android.view.KeyEvent;
 
-import androidx.annotation.Nullable;
-
-import com.android.launcher3.ExtendedEditText;
-
 /**
  * Interface for controlling the Apps search UI.
  */
@@ -29,7 +25,7 @@ public interface SearchUiManager {
     /**
      * Initializes the search manager.
      */
-    void initializeSearch(AllAppsContainerView containerView);
+    void initialize(AllAppsContainerView containerView);
 
     /**
      * Notifies the search manager to close any active search session.
@@ -40,29 +36,7 @@ public interface SearchUiManager {
      * Called before dispatching a key event, in case the search manager wants to initialize
      * some UI beforehand.
      */
-    default void preDispatchKeyEvent(KeyEvent keyEvent) { };
+    void preDispatchKeyEvent(KeyEvent keyEvent);
 
-    /**
-     * @return the edit text object
-     */
-    @Nullable
-    ExtendedEditText getEditText();
-
-    /**
-     * Sets whether EditText background should be visible
-     * @param maxAlpha defines the maximum alpha the background should animates to
-     */
-    default void setBackgroundVisibility(boolean visible, float maxAlpha) {}
-
-    /**
-     * Returns whether a visible background is set on EditText
-     */
-    default boolean getBackgroundVisibility() {
-        return false;
-    }
-
-    /**
-     * sets highlight result's title
-     */
-    default void setFocusedResultTitle(@Nullable  CharSequence title) { }
+    void startSearch();
 }

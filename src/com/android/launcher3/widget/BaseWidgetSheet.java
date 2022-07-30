@@ -15,208 +15,92 @@
  */
 package com.android.launcher3.widget;
 
+import static com.android.launcher3.logging.LoggerUtils.newContainerTarget;
+
 import android.content.Context;
 import android.graphics.Point;
-import android.graphics.Rect;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.View.OnLongClickListener;
 import android.widget.Toast;
 
-import androidx.annotation.GuardedBy;
-import androidx.annotation.Nullable;
-import androidx.core.view.ViewCompat;
-
-import com.android.launcher3.DeviceProfile;
 import com.android.launcher3.DragSource;
 import com.android.launcher3.DropTarget.DragObject;
-import com.android.launcher3.Insettable;
-import com.android.launcher3.Launcher;
+import com.android.launcher3.ItemInfo;
 import com.android.launcher3.R;
 import com.android.launcher3.Utilities;
 import com.android.launcher3.dragndrop.DragOptions;
-import com.android.launcher3.popup.PopupDataProvider;
-import com.android.launcher3.testing.TestLogging;
-import com.android.launcher3.testing.TestProtocol;
+import com.android.launcher3.graphics.ColorScrim;
 import com.android.launcher3.touch.ItemLongClickListener;
+import com.android.launcher3.userevent.nano.LauncherLogProto.ContainerType;
+import com.android.launcher3.userevent.nano.LauncherLogProto.Target;
 import com.android.launcher3.util.SystemUiController;
 import com.android.launcher3.util.Themes;
 import com.android.launcher3.views.AbstractSlideInView;
-import com.android.launcher3.views.ArrowTipView;
-
-import app.lawnchair.theme.color.ColorTokens;
 
 /**
  * Base class for various widgets popup
  */
-public abstract class BaseWidgetSheet extends AbstractSlideInView<Launcher>
-        implements OnClickListener, OnLongClickListener, DragSource,
-        PopupDataProvider.PopupDataChangeListener, Insettable {
-    /** The default number of cells that can fit horizontally in a widget sheet. */
-    protected static final int DEFAULT_MAX_HORIZONTAL_SPANS = 4;
-    /**
-     * The maximum scale, [0, 1], of the device screen width that the widgets picker can consume
-     * on large screen devices.
-     */
-    protected static final float MAX_WIDTH_SCALE_FOR_LARGER_SCREEN = 0.89f;
+abstract class BaseWidgetSheet extends AbstractSlideInView
+        implements OnClickListener, OnLongClickListener, DragSource {
 
-    protected static final String KEY_WIDGETS_EDUCATION_TIP_SEEN =
-            "launcher.widgets_education_tip_seen";
-    protected final Rect mInsets = new Rect();
 
     /* Touch handling related member variables. */
     private Toast mWidgetInstructionToast;
 
-    private int mContentHorizontalMarginInPx;
+    protected final ColorScrim mColorScrim;
 
     public BaseWidgetSheet(Context context, AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
-        mContentHorizontalMarginInPx = getResources().getDimensionPixelSize(
-                R.dimen.widget_list_horizontal_margin);
-    }
-
-    protected int getScrimColor(Context context) {
-        return ColorTokens.WidgetsPickerScrim.resolveColor(context);
-    }
-
-    @Override
-    protected void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        mActivityContext.getPopupDataProvider().setChangeListener(this);
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
-        mActivityContext.getPopupDataProvider().setChangeListener(null);
+        mColorScrim = ColorScrim.createExtractedColorScrim(this);
     }
 
     @Override
     public final void onClick(View v) {
-        Object tag = null;
-        if (v instanceof WidgetCell) {
-            tag = v.getTag();
-        } else if (v.getParent() instanceof WidgetCell) {
-            tag = ((WidgetCell) v.getParent()).getTag();
-        }
-        if (tag instanceof PendingAddShortcutInfo) {
-            mWidgetInstructionToast = showShortcutToast(getContext(), mWidgetInstructionToast);
-        } else {
-            mWidgetInstructionToast = showWidgetToast(getContext(), mWidgetInstructionToast);
+        // Let the user know that they have to long press to add a widget
+        if (mWidgetInstructionToast != null) {
+            mWidgetInstructionToast.cancel();
         }
 
+        CharSequence msg = Utilities.wrapForTts(
+                getContext().getText(R.string.long_press_widget_to_add),
+                getContext().getString(R.string.long_accessible_way_to_add));
+        mWidgetInstructionToast = Toast.makeText(getContext(), msg, Toast.LENGTH_SHORT);
+        mWidgetInstructionToast.show();
     }
 
     @Override
-    public boolean onLongClick(View v) {
-        if (TestProtocol.sDebugTracing) {
-            Log.d(TestProtocol.NO_DROP_TARGET, "1");
-        }
-        TestLogging.recordEvent(TestProtocol.SEQUENCE_MAIN, "Widgets.onLongClick");
-        v.cancelLongPress();
-        if (!ItemLongClickListener.canStartDrag(mActivityContext)) return false;
+    public final boolean onLongClick(View v) {
+        if (!ItemLongClickListener.canStartDrag(mLauncher)) return false;
 
         if (v instanceof WidgetCell) {
             return beginDraggingWidget((WidgetCell) v);
-        } else if (v.getParent() instanceof WidgetCell) {
-            return beginDraggingWidget((WidgetCell) v.getParent());
         }
         return true;
     }
 
-    @Override
-    public void setInsets(Rect insets) {
-        mInsets.set(insets);
-        int contentHorizontalMarginInPx = getResources().getDimensionPixelSize(
-                R.dimen.widget_list_horizontal_margin);
-        if (contentHorizontalMarginInPx != mContentHorizontalMarginInPx) {
-            onContentHorizontalMarginChanged(contentHorizontalMarginInPx);
-            mContentHorizontalMarginInPx = contentHorizontalMarginInPx;
-        }
-    }
-
-    /** Called when the horizontal margin of the content view has changed. */
-    protected abstract void onContentHorizontalMarginChanged(int contentHorizontalMarginInPx);
-
-    /**
-     * Measures the dimension of this view and its children by taking system insets, navigation bar,
-     * status bar, into account.
-     */
-    @GuardedBy("MainThread")
-    protected void doMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        DeviceProfile deviceProfile = mActivityContext.getDeviceProfile();
-        int widthUsed;
-        if (mInsets.bottom > 0) {
-            widthUsed = mInsets.left + mInsets.right;
-        } else {
-            Rect padding = deviceProfile.workspacePadding;
-            widthUsed = Math.max(padding.left + padding.right,
-                    2 * (mInsets.left + mInsets.right));
-        }
-
-        if (deviceProfile.isTablet || deviceProfile.isTwoPanels) {
-            // In large screen devices, we restrict the width of the widgets picker to show part of
-            // the home screen. Let's ensure the minimum width used is at least the minimum width
-            // that isn't taken by the widgets picker.
-            int minUsedWidth = (int) (deviceProfile.availableWidthPx
-                    * (1 - MAX_WIDTH_SCALE_FOR_LARGER_SCREEN));
-            widthUsed = Math.max(widthUsed, minUsedWidth);
-        }
-
-        int heightUsed = mInsets.top + deviceProfile.edgeMarginPx;
-        measureChildWithMargins(mContent, widthMeasureSpec,
-                widthUsed, heightMeasureSpec, heightUsed);
-        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec),
-                MeasureSpec.getSize(heightMeasureSpec));
-    }
-
-    /** Returns the number of cells that can fit horizontally in a given {@code content}. */
-    protected int computeMaxHorizontalSpans(View content, int contentHorizontalPaddingPx) {
-        DeviceProfile deviceProfile = mActivityContext.getDeviceProfile();
-        int availableWidth = content.getMeasuredWidth() - contentHorizontalPaddingPx;
-        Point cellSize = deviceProfile.getCellSize();
-        if (cellSize.x > 0) {
-            return availableWidth / cellSize.x;
-        }
-        return DEFAULT_MAX_HORIZONTAL_SPANS;
+    protected void setTranslationShift(float translationShift) {
+        super.setTranslationShift(translationShift);
+        mColorScrim.setProgress(1 - mTranslationShift);
     }
 
     private boolean beginDraggingWidget(WidgetCell v) {
-        if (TestProtocol.sDebugTracing) {
-            Log.d(TestProtocol.NO_DROP_TARGET, "2");
-        }
         // Get the widget preview as the drag representation
         WidgetImageView image = v.getWidgetView();
 
         // If the ImageView doesn't have a drawable yet, the widget preview hasn't been loaded and
         // we abort the drag.
-        if (image.getDrawable() == null && v.getAppWidgetHostViewPreview() == null) {
+        if (image.getBitmap() == null) {
             return false;
         }
 
-        PendingItemDragHelper dragHelper = new PendingItemDragHelper(v);
-        // RemoteViews are being rendered in AppWidgetHostView in WidgetCell. And thus, the scale of
-        // RemoteViews is equivalent to the AppWidgetHostView scale.
-        dragHelper.setRemoteViewsPreview(v.getRemoteViewsPreview(), v.getAppWidgetHostViewScale());
-        dragHelper.setAppWidgetHostViewPreview(v.getAppWidgetHostViewPreview());
+        int[] loc = new int[2];
+        mLauncher.getDragLayer().getLocationInDragLayer(image, loc);
 
-        if (image.getDrawable() != null) {
-            int[] loc = new int[2];
-            getPopupContainer().getLocationInDragLayer(image, loc);
-
-            dragHelper.startDrag(image.getBitmapBounds(), image.getDrawable().getIntrinsicWidth(),
-                    image.getWidth(), new Point(loc[0], loc[1]), this, new DragOptions());
-        } else {
-            NavigableAppWidgetHostView preview = v.getAppWidgetHostViewPreview();
-            int[] loc = new int[2];
-            getPopupContainer().getLocationInDragLayer(preview, loc);
-            Rect r = new Rect();
-            preview.getWorkspaceVisualDragBounds(r);
-            dragHelper.startDrag(r, preview.getMeasuredWidth(), preview.getMeasuredWidth(),
-                    new Point(loc[0], loc[1]), this, new DragOptions());
-        }
+        new PendingItemDragHelper(v).startDrag(
+                image.getBitmapBounds(), image.getBitmap().getWidth(), image.getWidth(),
+                new Point(loc[0], loc[1]), this, new DragOptions());
         close(true);
         return true;
     }
@@ -235,78 +119,30 @@ public abstract class BaseWidgetSheet extends AbstractSlideInView<Launcher>
     }
 
     protected void clearNavBarColor() {
-        getSystemUiController().updateUiState(
+        mLauncher.getSystemUiController().updateUiState(
                 SystemUiController.UI_STATE_WIDGET_BOTTOM_SHEET, 0);
     }
 
     protected void setupNavBarColor() {
-        boolean isSheetDark = Themes.getAttrBoolean(getContext(), R.attr.isMainColorDark);
-        getSystemUiController().updateUiState(
+        boolean isSheetDark = Themes.getAttrBoolean(mLauncher, R.attr.isMainColorDark);
+        mLauncher.getSystemUiController().updateUiState(
                 SystemUiController.UI_STATE_WIDGET_BOTTOM_SHEET,
                 isSheetDark ? SystemUiController.FLAG_DARK_NAV : SystemUiController.FLAG_LIGHT_NAV);
     }
 
-    protected SystemUiController getSystemUiController() {
-        return mActivityContext.getSystemUiController();
+    @Override
+    public void fillInLogContainerData(View v, ItemInfo info, Target target, Target targetParent) {
+        targetParent.containerType = ContainerType.WIDGETS;
+        targetParent.cardinality = getElementsRowCount();
     }
 
-    /**
-     * Show Widget tap toast prompting user to drag instead
-     */
-    public static Toast showWidgetToast(Context context, Toast toast) {
-        // Let the user know that they have to long press to add a widget
-        if (toast != null) {
-            toast.cancel();
-        }
-
-        CharSequence msg = Utilities.wrapForTts(
-                context.getText(R.string.long_press_widget_to_add),
-                context.getString(R.string.long_accessible_way_to_add));
-        toast = Toast.makeText(context, msg, Toast.LENGTH_SHORT);
-        toast.show();
-        return toast;
+    @Override
+    public final void logActionCommand(int command) {
+        Target target = newContainerTarget(ContainerType.WIDGETS);
+        target.cardinality = getElementsRowCount();
+        mLauncher.getUserEventDispatcher().logActionCommand(command, target);
     }
 
-    /**
-     * Show shortcut tap toast prompting user to drag instead.
-     */
-    private static Toast showShortcutToast(Context context, Toast toast) {
-        // Let the user know that they have to long press to add a widget
-        if (toast != null) {
-            toast.cancel();
-        }
+    protected abstract int getElementsRowCount();
 
-        CharSequence msg = Utilities.wrapForTts(
-                context.getText(R.string.long_press_shortcut_to_add),
-                context.getString(R.string.long_accessible_way_to_add_shortcut));
-        toast = Toast.makeText(context, msg, Toast.LENGTH_SHORT);
-        toast.show();
-        return toast;
-    }
-
-    /** Shows education tip on top center of {@code view} if view is laid out. */
-    @Nullable
-    protected ArrowTipView showEducationTipOnViewIfPossible(@Nullable View view) {
-        if (view == null || !ViewCompat.isLaidOut(view)) {
-            return null;
-        }
-        int[] coords = new int[2];
-        view.getLocationOnScreen(coords);
-        ArrowTipView arrowTipView =
-                new ArrowTipView(mActivityContext,  /* isPointingUp= */ false).showAtLocation(
-                        getContext().getString(R.string.long_press_widget_to_add),
-                        /* arrowXCoord= */coords[0] + view.getWidth() / 2,
-                        /* yCoord= */coords[1]);
-        if (arrowTipView != null) {
-            mActivityContext.getSharedPrefs().edit()
-                    .putBoolean(KEY_WIDGETS_EDUCATION_TIP_SEEN, true).apply();
-        }
-        return arrowTipView;
-    }
-
-    /** Returns {@code true} if tip has previously been shown on any of {@link BaseWidgetSheet}. */
-    protected boolean hasSeenEducationTip() {
-        return mActivityContext.getSharedPrefs().getBoolean(KEY_WIDGETS_EDUCATION_TIP_SEEN, false)
-                || Utilities.IS_RUNNING_IN_TEST_HARNESS;
-    }
 }

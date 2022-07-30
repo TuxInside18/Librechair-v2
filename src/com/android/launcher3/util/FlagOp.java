@@ -1,16 +1,30 @@
 package com.android.launcher3.util;
 
-public interface FlagOp {
+public abstract class FlagOp {
 
-    FlagOp NO_OP = i -> i;
+    public static FlagOp NO_OP = new FlagOp() {};
 
-    int apply(int flags);
+    private FlagOp() {}
 
-    static FlagOp addFlag(int flag) {
-        return i -> i | flag;
+    public int apply(int flags) {
+        return flags;
     }
 
-    static FlagOp removeFlag(int flag) {
-        return i -> i & ~flag;
+    public static FlagOp addFlag(final int flag) {
+        return new FlagOp() {
+            @Override
+            public int apply(int flags) {
+                return flags | flag;
+            }
+        };
+    }
+
+    public static FlagOp removeFlag(final int flag) {
+        return new FlagOp() {
+            @Override
+            public int apply(int flags) {
+                return flags & ~flag;
+            }
+        };
     }
 }

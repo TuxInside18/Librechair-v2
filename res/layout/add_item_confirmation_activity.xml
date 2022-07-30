@@ -16,111 +16,76 @@
 ** limitations under the License.
 */
 -->
-<com.android.launcher3.dragndrop.AddItemDragLayer
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/add_item_drag_layer"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:clipChildren="false"
-    android:clipToPadding="false"
-    android:importantForAccessibility="no">
-
-    <com.android.launcher3.widget.AddItemWidgetsBottomSheet
-        android:id="@+id/add_item_bottom_sheet"
+    android:orientation="vertical">
+    <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:theme="?attr/widgetsTheme"
-        android:layout_gravity="bottom"
-        android:orientation="vertical">
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipToPadding="false">
 
         <LinearLayout
-            android:id="@+id/add_item_bottom_sheet_content"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingVertical="24dp"
-            android:background="@drawable/add_item_dialog_background"
-            android:orientation="vertical" >
+            android:orientation="vertical">
 
             <TextView
-                style="@style/TextHeadline"
-                android:id="@+id/widget_appName"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginHorizontal="@dimen/widget_list_horizontal_margin"
-                android:gravity="center_horizontal"
-                android:textColor="?android:attr/textColorPrimary"
-                android:textSize="24sp"
-                android:ellipsize="end"
-                android:fadingEdge="horizontal"
-                android:singleLine="true"
-                android:maxLines="1" />
+                android:paddingBottom="20dp"
+                android:paddingLeft="24dp"
+                android:paddingRight="24dp"
+                android:paddingTop="4dp"
+                android:text="@string/add_item_request_drag_hint" />
 
-            <TextView
-                android:id="@+id/widget_drag_instruction"
+            <FrameLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginHorizontal="@dimen/widget_list_horizontal_margin"
-                android:gravity="center_horizontal"
-                android:paddingTop="8dp"
-                android:text="@string/add_item_request_drag_hint"
-                android:textSize="14sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:alpha="0.7"/>
+                android:background="?android:attr/colorPrimaryDark"
+                android:theme="@style/WidgetContainerTheme">
 
-            <ScrollView
-                android:id="@+id/widget_preview_scroll_view"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_marginVertical="16dp"
-                android:layout_weight="1">
-
-                <include
+                <com.android.launcher3.dragndrop.LivePreviewWidgetCell
                     android:id="@+id/widget_cell"
-                    layout="@layout/widget_cell"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginHorizontal="@dimen/widget_list_horizontal_margin" />
-            </ScrollView>
-
-            <LinearLayout
-                android:id="@+id/actions_container"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginHorizontal="@dimen/widget_list_horizontal_margin"
-                android:gravity="center_vertical|end"
-                android:paddingVertical="8dp"
-                android:orientation="horizontal">
-                <Button
-                    style="@style/Button.FullRounded.Colored"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:paddingHorizontal="16dp"
-                    android:textSize="14sp"
-                    android:maxLines="2"
-                    android:ellipsize="end"
-                    android:textColor="@color/button_text"
-                    android:text="@android:string/cancel"
-                    android:onClick="onCancelClick"/>
+                    android:layout_gravity="center_horizontal"
+                    android:layout_weight="1"
+                    android:background="?android:attr/colorPrimaryDark"
+                    android:focusable="true"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical" >
 
-                <Space
-                    android:layout_width="8dp"
-                    android:layout_height="wrap_content" />
+                    <include layout="@layout/widget_cell_content"  />
 
-                <Button
-                    style="@style/Button.FullRounded.Colored"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:paddingHorizontal="16dp"
-                    android:textSize="14sp"
-                    android:maxLines="2"
-                    android:ellipsize="end"
-                    android:textColor="@color/button_text"
-                    android:text="@string/add_to_home_screen"
-                    android:onClick="onPlaceAutomaticallyClick"/>
-            </LinearLayout>
+                </com.android.launcher3.dragndrop.LivePreviewWidgetCell>
+            </FrameLayout>
         </LinearLayout>
-    </com.android.launcher3.widget.AddItemWidgetsBottomSheet>
+    </ScrollView>
 
-</com.android.launcher3.dragndrop.AddItemDragLayer>
-
-
+    <LinearLayout
+        style="?android:attr/buttonBarStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:paddingBottom="4dp"
+        android:paddingEnd="12dp"
+        android:paddingStart="12dp"
+        android:paddingTop="4dp" >
+        <Button
+            android:id="@+id/cancel_action"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:onClick="onCancelClick"
+            android:text="@android:string/cancel" />
+        <Button
+            android:id="@+id/add_action"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:onClick="onPlaceAutomaticallyClick"
+            android:text="@string/place_automatically" />
+    </LinearLayout>
+</LinearLayout>

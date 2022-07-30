@@ -5,7 +5,6 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.content.Context;
-import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -19,12 +18,13 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import android.widget.FrameLayout;
 
+import ch.deletescape.lawnchair.LawnchairPreferences;
+import ch.deletescape.lawnchair.theme.ThemeManager;
 import com.android.launcher3.DeviceProfile;
 import com.android.launcher3.Insettable;
 import com.android.launcher3.Launcher;
 import com.android.launcher3.R;
 import com.android.launcher3.Utilities;
-import com.android.launcher3.util.Themes;
 
 /**
  * A PageIndicator that briefly shows a fraction of a line when moving between pages
@@ -59,7 +59,7 @@ public class WorkspacePageIndicator extends View implements Insettable, PageIndi
     private int mCurrentScroll;
     private int mTotalScroll;
     private Paint mLinePaint;
-    private final int mLineHeight;
+    private int mLineHeight;
 
     private static final Property<WorkspacePageIndicator, Integer> PAINT_ALPHA
             = new Property<WorkspacePageIndicator, Integer>(Integer.class, "paint_alpha") {
@@ -105,6 +105,8 @@ public class WorkspacePageIndicator extends View implements Insettable, PageIndi
 
     private Runnable mHideLineRunnable = () -> animateLineToAlpha(0);
 
+    private boolean mUseBottomLine;
+
     public WorkspacePageIndicator(Context context) {
         this(context, null);
     }
@@ -116,16 +118,24 @@ public class WorkspacePageIndicator extends View implements Insettable, PageIndi
     public WorkspacePageIndicator(Context context, AttributeSet attrs, int defStyle) {
         super(context, attrs, defStyle);
 
-        Resources res = context.getResources();
         mLinePaint = new Paint();
         mLinePaint.setAlpha(0);
 
         mLauncher = Launcher.getLauncher(context);
-        mLineHeight = res.getDimensionPixelSize(R.dimen.workspace_page_indicator_line_height);
+        updateLineHeight();
 
-        boolean darkText = Themes.getAttrBoolean(mLauncher, R.attr.isWorkspaceDarkText);
+        boolean darkText = ThemeManager.Companion.getInstance(context).getSupportsDarkText();
         mActiveAlpha = darkText ? BLACK_ALPHA : WHITE_ALPHA;
         mLinePaint.setColor(darkText ? Color.BLACK : Color.WHITE);
+
+        LawnchairPreferences prefs = Utilities.getLawnchairPrefs(context);
+        mUseBottomLine = !prefs.getDockGradientStyle() || prefs.getDockShowArrow();
+    }
+
+    public void updateLineHeight() {
+        boolean show = Utilities.getLawnchairPrefs(getContext()).getDockShowPageIndicator();
+        mLineHeight = !show ? 0 : getResources()
+                .getDimensionPixelSize(R.dimen.dynamic_grid_page_indicator_line_height);
     }
 
     @Override
@@ -141,6 +151,11 @@ public class WorkspacePageIndicator extends View implements Insettable, PageIndi
         int lineLeft = (int) (progress * (availableWidth - lineWidth));
         int lineRight = lineLeft + lineWidth;
 
+        if (mUseBottomLine) {
+            canvas.drawRoundRect(lineLeft, getHeight() - mLineHeight / 2, lineRight,
+                    getHeight() + mLineHeight / 2, mLineHeight, mLineHeight, mLinePaint);
+            return;
+        }
         canvas.drawRoundRect(lineLeft, getHeight() / 2 - mLineHeight / 2, lineRight,
                 getHeight() / 2 + mLineHeight / 2, mLineHeight, mLineHeight, mLinePaint);
     }

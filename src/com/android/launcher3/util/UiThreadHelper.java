@@ -15,81 +15,51 @@
  */
 package com.android.launcher3.util;
 
-import static com.android.launcher3.logging.StatsLogManager.LauncherEvent.LAUNCHER_ALLAPPS_KEYBOARD_CLOSED;
-import static com.android.launcher3.util.Executors.UI_HELPER_EXECUTOR;
-
-import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.content.Context;
-import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Message;
-import android.view.View;
+import android.os.Process;
 import android.view.inputmethod.InputMethodManager;
-
-import com.android.launcher3.BaseActivity;
-import com.android.launcher3.views.ActivityContext;
 
 /**
  * Utility class for offloading some class from UI thread
  */
 public class UiThreadHelper {
 
-    private static final MainThreadInitializedObject<Handler> HANDLER =
-            new MainThreadInitializedObject<>(
-                    c -> new Handler(UI_HELPER_EXECUTOR.getLooper(), new UiCallbacks(c)));
+    private static HandlerThread sHandlerThread;
+    private static Handler sHandler;
 
     private static final int MSG_HIDE_KEYBOARD = 1;
-    private static final int MSG_SET_ORIENTATION = 2;
-    private static final int MSG_RUN_COMMAND = 3;
-    private static final String STATS_LOGGER_KEY = "STATS_LOGGER_KEY";
 
-    @SuppressLint("NewApi")
-    public static void hideKeyboardAsync(ActivityContext activityContext, IBinder token) {
-        View root = activityContext.getDragLayer();
-
-        // Since the launcher context cannot be accessed directly from callback, adding secondary
-        // message to log keyboard close event asynchronously.
-        Bundle mHideKeyboardLoggerMsg = new Bundle();
-        mHideKeyboardLoggerMsg.putParcelable(
-                STATS_LOGGER_KEY,
-                Message.obtain(
-                        HANDLER.get(root.getContext()),
-                        () -> BaseActivity.fromContext(root.getContext())
-                                .getStatsLogManager()
-                                .logger()
-                                .log(LAUNCHER_ALLAPPS_KEYBOARD_CLOSED)
-                )
-        );
-
-        Message mHideKeyboardMsg = Message.obtain(HANDLER.get(root.getContext()), MSG_HIDE_KEYBOARD,
-                token);
-        mHideKeyboardMsg.setData(mHideKeyboardLoggerMsg);
-        mHideKeyboardMsg.sendToTarget();
+    public static Looper getBackgroundLooper() {
+        if (sHandlerThread == null) {
+            sHandlerThread =
+                    new HandlerThread("UiThreadHelper", Process.THREAD_PRIORITY_FOREGROUND);
+            sHandlerThread.start();
+        }
+        return sHandlerThread.getLooper();
     }
 
-    public static void setOrientationAsync(Activity activity, int orientation) {
-        Message.obtain(HANDLER.get(activity), MSG_SET_ORIENTATION, orientation, 0, activity)
-                .sendToTarget();
+    private static Handler getHandler(Context context) {
+        if (sHandler == null) {
+            sHandler = new Handler(getBackgroundLooper(),
+                    new UiCallbacks(context.getApplicationContext()));
+        }
+        return sHandler;
     }
 
-    public static void setBackButtonAlphaAsync(Context context, AsyncCommand command, float alpha,
-            boolean animate) {
-        runAsyncCommand(context, command, Float.floatToIntBits(alpha), animate ? 1 : 0);
-    }
-
-    public static void runAsyncCommand(Context context, AsyncCommand command, int arg1, int arg2) {
-        Message.obtain(HANDLER.get(context), MSG_RUN_COMMAND, arg1, arg2, command).sendToTarget();
+    public static void hideKeyboardAsync(Context context, IBinder token) {
+        Message.obtain(getHandler(context), MSG_HIDE_KEYBOARD, token).sendToTarget();
     }
 
     private static class UiCallbacks implements Handler.Callback {
 
-        private final Context mContext;
         private final InputMethodManager mIMM;
 
         UiCallbacks(Context context) {
-            mContext = context;
             mIMM = (InputMethodManager) context.getSystemService(Context.INPUT_METHOD_SERVICE);
         }
 
@@ -97,24 +67,10 @@ public class UiThreadHelper {
         public boolean handleMessage(Message message) {
             switch (message.what) {
                 case MSG_HIDE_KEYBOARD:
-                    if (mIMM.hideSoftInputFromWindow((IBinder) message.obj, 0)) {
-                        // log keyboard close event only when keyboard is actually closed
-                        ((Message) message.getData().getParcelable(STATS_LOGGER_KEY))
-                                .sendToTarget();
-                    }
-                    return true;
-                case MSG_SET_ORIENTATION:
-                    ((Activity) message.obj).setRequestedOrientation(message.arg1);
-                    return true;
-                case MSG_RUN_COMMAND:
-                    ((AsyncCommand) message.obj).execute(mContext, message.arg1, message.arg2);
+                    mIMM.hideSoftInputFromWindow((IBinder) message.obj, 0);
                     return true;
             }
             return false;
         }
-    }
-
-    public interface AsyncCommand {
-        void execute(Context proxy, int arg1, int arg2);
     }
 }

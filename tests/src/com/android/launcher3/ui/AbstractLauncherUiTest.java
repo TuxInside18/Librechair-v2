@@ -15,79 +15,43 @@
  */
 package com.android.launcher3.ui;
 
-import static androidx.test.InstrumentationRegistry.getInstrumentation;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
-import static com.android.launcher3.ui.TaplTestsLauncher3.getAppPackageName;
-import static com.android.launcher3.util.Executors.MAIN_EXECUTOR;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
+import android.app.Instrumentation;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.ActivityInfo;
 import android.content.pm.LauncherActivityInfo;
-import android.content.pm.LauncherApps;
-import android.content.pm.PackageInfo;
-import android.content.pm.PackageManager;
-import android.os.Debug;
+import android.graphics.Point;
 import android.os.Process;
 import android.os.RemoteException;
-import android.os.UserHandle;
-import android.os.UserManager;
-import android.system.OsConstants;
-import android.util.Log;
-
-import androidx.test.InstrumentationRegistry;
+import android.os.SystemClock;
+import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.uiautomator.By;
 import androidx.test.uiautomator.BySelector;
+import androidx.test.uiautomator.Direction;
 import androidx.test.uiautomator.UiDevice;
+import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
-
-import com.android.launcher3.Launcher;
+import android.util.Log;
+import android.view.MotionEvent;
 import com.android.launcher3.LauncherAppState;
+import com.android.launcher3.LauncherAppWidgetProviderInfo;
 import com.android.launcher3.LauncherSettings;
-import com.android.launcher3.LauncherState;
-import com.android.launcher3.Utilities;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.statemanager.StateManager;
-import com.android.launcher3.tapl.LauncherInstrumentation;
-import com.android.launcher3.tapl.LauncherInstrumentation.ContainerType;
-import com.android.launcher3.tapl.TestHelpers;
-import com.android.launcher3.testcomponent.TestCommandReceiver;
-import com.android.launcher3.testing.TestProtocol;
-import com.android.launcher3.util.LooperExecutor;
-import com.android.launcher3.util.PackageManagerHelper;
-import com.android.launcher3.util.Wait;
-import com.android.launcher3.util.WidgetUtils;
-import com.android.launcher3.util.rule.FailureWatcher;
-import com.android.launcher3.util.rule.LauncherActivityRule;
-import com.android.launcher3.util.rule.ScreenRecordRule;
-import com.android.launcher3.util.rule.ShellCommandRule;
-import com.android.launcher3.util.rule.TestStabilityRule;
-
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.rules.RuleChain;
-import org.junit.rules.TestRule;
-
-import java.io.IOException;
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
+import com.android.launcher3.MainThreadExecutor;
+import com.android.launcher3.R;
+import com.android.launcher3.compat.AppWidgetManagerCompat;
+import com.android.launcher3.compat.LauncherAppsCompat;
+import com.android.launcher3.config.FeatureFlags;
+import com.android.launcher3.testcomponent.AppWidgetNoConfig;
+import com.android.launcher3.testcomponent.AppWidgetWithConfig;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
+import org.junit.Before;
 
 /**
  * Base class for all instrumentation tests providing various utility methods.
@@ -97,197 +61,149 @@ public abstract class AbstractLauncherUiTest {
     public static final long DEFAULT_ACTIVITY_TIMEOUT = TimeUnit.SECONDS.toMillis(10);
     public static final long DEFAULT_BROADCAST_TIMEOUT_SECS = 5;
 
-    public static final long DEFAULT_UI_TIMEOUT = 10000;
-    private static final String TAG = "AbstractLauncherUiTest";
+    public static final long SHORT_UI_TIMEOUT= 300;
+    public static final long DEFAULT_UI_TIMEOUT = 3000;
+    public static final long LARGE_UI_TIMEOUT = 10000;
+    public static final long DEFAULT_WORKER_TIMEOUT_SECS = 5;
 
-    private static boolean sDumpWasGenerated = false;
-    private static boolean sActivityLeakReported = false;
-    private static final String SYSTEMUI_PACKAGE = "com.android.systemui";
-
-    protected LooperExecutor mMainThreadExecutor = MAIN_EXECUTOR;
-    protected final UiDevice mDevice = UiDevice.getInstance(getInstrumentation());
-    protected final LauncherInstrumentation mLauncher = new LauncherInstrumentation();
+    protected MainThreadExecutor mMainThreadExecutor = new MainThreadExecutor();
+    protected UiDevice mDevice;
     protected Context mTargetContext;
     protected String mTargetPackage;
-    private int mLauncherPid;
 
-    public static void checkDetectedLeaks(LauncherInstrumentation launcher) {
-        if (sActivityLeakReported) return;
-
-        // Check whether activity leak detector has found leaked activities.
-        Wait.atMost(() -> getActivityLeakErrorMessage(launcher),
-                () -> {
-                    launcher.forceGc();
-                    return MAIN_EXECUTOR.submit(
-                            () -> launcher.noLeakedActivities()).get();
-                }, DEFAULT_UI_TIMEOUT, launcher);
-    }
-
-    private static String getActivityLeakErrorMessage(LauncherInstrumentation launcher) {
-        sActivityLeakReported = true;
-        return "Activity leak detector has found leaked activities, "
-                + dumpHprofData(launcher) + ".";
-    }
-
-    public static String dumpHprofData(LauncherInstrumentation launcher) {
-        String result;
-        if (sDumpWasGenerated) {
-            Log.d("b/195319692", "dump has already been generated by another test",
-                    new Exception());
-            result = "dump has already been generated by another test";
-        } else {
-            try {
-                final String fileName =
-                        getInstrumentation().getTargetContext().getFilesDir().getPath()
-                                + "/ActivityLeakHeapDump.hprof";
-                if (TestHelpers.isInLauncherProcess()) {
-                    Debug.dumpHprofData(fileName);
-                } else {
-                    final UiDevice device = UiDevice.getInstance(getInstrumentation());
-                    device.executeShellCommand(
-                            "am dumpheap " + device.getLauncherPackageName() + " " + fileName);
-                }
-                sDumpWasGenerated = true;
-                Log.d("b/195319692", "sDumpWasGenerated := true", new Exception());
-                result = "saved memory dump as an artifact";
-            } catch (Throwable e) {
-                Log.e(TAG, "dumpHprofData failed", e);
-                result = "failed to save memory dump";
-            }
-        }
-        return result + ". Full list of activities: " + launcher.getRootedActivitiesList();
-    }
-
-    protected AbstractLauncherUiTest() {
-        mLauncher.enableCheckEventsForSuccessfulGestures();
-        try {
-            mDevice.setOrientationNatural();
-        } catch (RemoteException e) {
-            throw new RuntimeException(e);
-        }
-        if (TestHelpers.isInLauncherProcess()) {
-            Utilities.enableRunningInTestHarnessForTests();
-            mLauncher.setSystemHealthSupplier(startTime -> TestCommandReceiver.callCommand(
-                    TestCommandReceiver.GET_SYSTEM_HEALTH_MESSAGE, startTime.toString()).
-                    getString("result"));
-            mLauncher.setOnSettledStateAction(
-                    containerType -> executeOnLauncher(
-                            launcher ->
-                                    checkLauncherIntegrity(launcher, containerType)));
-        }
-        mLauncher.enableDebugTracing();
-        // Avoid double-reporting of Launcher crashes.
-        mLauncher.setOnLauncherCrashed(() -> mLauncherPid = 0);
-    }
-
-    protected final LauncherActivityRule mActivityMonitor = new LauncherActivityRule();
-
-    @Rule
-    public ShellCommandRule mDisableHeadsUpNotification =
-            ShellCommandRule.disableHeadsUpNotification();
-
-    @Rule
-    public ScreenRecordRule mScreenRecordRule = new ScreenRecordRule();
-
-    protected void clearPackageData(String pkg) throws IOException, InterruptedException {
-        final CountDownLatch count = new CountDownLatch(2);
-        final BroadcastReceiver broadcastReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                count.countDown();
-            }
-        };
-        mTargetContext.registerReceiver(broadcastReceiver,
-                PackageManagerHelper.getPackageFilter(pkg,
-                        Intent.ACTION_PACKAGE_RESTARTED, Intent.ACTION_PACKAGE_DATA_CLEARED));
-
-        mDevice.executeShellCommand("pm clear " + pkg);
-        assertTrue(pkg + " didn't restart", count.await(10, TimeUnit.SECONDS));
-        mTargetContext.unregisterReceiver(broadcastReceiver);
-    }
-
-    // Annotation for tests that need to be run in portrait and landscape modes.
-    @Retention(RetentionPolicy.RUNTIME)
-    @Target(ElementType.METHOD)
-    protected @interface PortraitLandscape {
-    }
-
-    protected TestRule getRulesInsideActivityMonitor() {
-        final RuleChain inner = RuleChain
-                .outerRule(new PortraitLandscapeRunner(this))
-                .around(new FailureWatcher(mDevice, mLauncher));
-
-        return TestHelpers.isInLauncherProcess()
-                ? RuleChain.outerRule(ShellCommandRule.setDefaultLauncher())
-                .around(inner) :
-                inner;
-    }
-
-    @Rule
-    public TestRule mOrderSensitiveRules = RuleChain
-            .outerRule(new TestStabilityRule())
-            .around(mActivityMonitor)
-            .around(getRulesInsideActivityMonitor());
-
-    public UiDevice getDevice() {
-        return mDevice;
-    }
+    private static final String TAG = "AbstractLauncherUiTest";
 
     @Before
     public void setUp() throws Exception {
-        mLauncher.onTestStart();
-        Assert.assertTrue("Keyguard is visible, which is likely caused by a crash in SysUI",
-                TestHelpers.wait(
-                        Until.gone(By.res(SYSTEMUI_PACKAGE, "keyguard_status_view")), 60000));
-
-        final String launcherPackageName = mDevice.getLauncherPackageName();
-        try {
-            final Context context = InstrumentationRegistry.getContext();
-            final PackageManager pm = context.getPackageManager();
-            final PackageInfo launcherPackage = pm.getPackageInfo(launcherPackageName, 0);
-
-            if (!launcherPackage.versionName.equals("BuildFromAndroidStudio")) {
-                Assert.assertEquals("Launcher version doesn't match tests version",
-                        pm.getPackageInfo(context.getPackageName(), 0).getLongVersionCode(),
-                        launcherPackage.getLongVersionCode());
-            }
-        } catch (PackageManager.NameNotFoundException e) {
-            throw new RuntimeException(e);
-        }
-
-        mLauncherPid = 0;
-
+        mDevice = UiDevice.getInstance(getInstrumentation());
         mTargetContext = InstrumentationRegistry.getTargetContext();
         mTargetPackage = mTargetContext.getPackageName();
-        mLauncherPid = mLauncher.getPid();
+    }
 
-        UserManager userManager = mTargetContext.getSystemService(UserManager.class);
-        if (userManager != null) {
-            for (UserHandle userHandle : userManager.getUserProfiles()) {
-                if (!userHandle.isSystem()) {
-                    mDevice.executeShellCommand("pm remove-user " + userHandle.getIdentifier());
-                }
-            }
+    protected void lockRotation(boolean naturalOrientation) throws RemoteException {
+        if (naturalOrientation) {
+            mDevice.setOrientationNatural();
+        } else {
+            mDevice.setOrientationRight();
         }
     }
 
-    @After
-    public void verifyLauncherState() {
-        try {
-            // Limits UI tests affecting tests running after them.
-            mLauncher.waitForLauncherInitialized();
-            if (mLauncherPid != 0) {
-                assertEquals("Launcher crashed, pid mismatch:",
-                        mLauncherPid, mLauncher.getPid().intValue());
+    protected Instrumentation getInstrumentation() {
+        return InstrumentationRegistry.getInstrumentation();
+    }
+
+    /**
+     * Opens all apps and returns the recycler view
+     */
+    protected UiObject2 openAllApps() {
+        mDevice.waitForIdle();
+        if (FeatureFlags.NO_ALL_APPS_ICON) {
+            UiObject2 hotseat = mDevice.wait(
+                    Until.findObject(getSelectorForId(R.id.hotseat)), 2500);
+            Point start = hotseat.getVisibleCenter();
+            int endY = (int) (mDevice.getDisplayHeight() * 0.1f);
+            // 100 px/step
+            mDevice.swipe(start.x, start.y, start.x, endY, (start.y - endY) / 100);
+
+        } else {
+            mDevice.wait(Until.findObject(
+                    By.desc(mTargetContext.getString(R.string.all_apps_button_label))),
+                    DEFAULT_UI_TIMEOUT).click();
+        }
+        return findViewById(R.id.apps_list_view);
+    }
+
+    /**
+     * Opens widget tray and returns the recycler view.
+     */
+    protected UiObject2 openWidgetsTray() {
+        mDevice.pressMenu(); // Enter overview mode.
+        mDevice.wait(Until.findObject(
+                By.text(mTargetContext.getString(R.string.widget_button_text))), DEFAULT_UI_TIMEOUT).click();
+        return findViewById(R.id.widgets_list_view);
+    }
+
+    /**
+     * Scrolls the {@param container} until it finds an object matching {@param condition}.
+     * @return the matching object.
+     */
+    protected UiObject2 scrollAndFind(UiObject2 container, BySelector condition) {
+        do {
+            // findObject can only execute after spring settles.
+            mDevice.wait(Until.findObject(condition), SHORT_UI_TIMEOUT);
+            UiObject2 widget = container.findObject(condition);
+            if (widget != null) {
+                return widget;
             }
-        } finally {
-            mLauncher.onTestFinish();
+        } while (container.scroll(Direction.DOWN, 1f));
+        return container.findObject(condition);
+    }
+
+    /**
+     * Drags an iconView to the center of homescreen.
+     * @param icon  object that is either app iconView or shortcut iconView
+     */
+    protected void dragToWorkspace(UiObject2 icon, boolean expectedToShowShortcuts) {
+        Point center = icon.getVisibleCenter();
+
+        // Action Down
+        sendPointer(MotionEvent.ACTION_DOWN, center);
+
+        UiObject2 dragLayer = findViewById(R.id.drag_layer);
+
+        if (expectedToShowShortcuts) {
+            // Make sure shortcuts show up, and then move a bit to hide them.
+            assertNotNull(findViewById(R.id.deep_shortcuts_container));
+
+            Point moveLocation = new Point(center);
+            int distanceToMove = mTargetContext.getResources().getDimensionPixelSize(
+                    R.dimen.deep_shortcuts_start_drag_threshold) + 50;
+            if (moveLocation.y - distanceToMove >= dragLayer.getVisibleBounds().top) {
+                moveLocation.y -= distanceToMove;
+            } else {
+                moveLocation.y += distanceToMove;
+            }
+            movePointer(center, moveLocation);
+
+            assertNull(findViewById(R.id.deep_shortcuts_container));
+        }
+
+        // Wait until Remove/Delete target is visible
+        assertNotNull(findViewById(R.id.delete_target_text));
+
+        Point moveLocation = dragLayer.getVisibleCenter();
+
+        // Move to center
+        movePointer(center, moveLocation);
+        sendPointer(MotionEvent.ACTION_UP, center);
+
+        // Wait until remove target is gone.
+        mDevice.wait(Until.gone(getSelectorForId(R.id.delete_target_text)), DEFAULT_UI_TIMEOUT);
+    }
+
+    private void movePointer(Point from, Point to) {
+        while(!from.equals(to)) {
+            from.x = getNextMoveValue(to.x, from.x);
+            from.y = getNextMoveValue(to.y, from.y);
+            sendPointer(MotionEvent.ACTION_MOVE, from);
         }
     }
 
-    protected void clearLauncherData() {
-        mLauncher.clearLauncherData();
-        mLauncher.waitForLauncherInitialized();
+    private int getNextMoveValue(int targetValue, int oldValue) {
+        if (targetValue - oldValue > 10) {
+            return oldValue + 10;
+        } else if (targetValue - oldValue < -10) {
+            return oldValue - 10;
+        } else {
+            return targetValue;
+        }
+    }
+
+    protected void sendPointer(int action, Point point) {
+        MotionEvent event = MotionEvent.obtain(SystemClock.uptimeMillis(),
+                SystemClock.uptimeMillis(), action, point.x, point.y, 0);
+        getInstrumentation().sendPointerSync(event);
+        event.recycle();
     }
 
     /**
@@ -303,25 +219,15 @@ public abstract class AbstractLauncherUiTest {
 
     protected void resetLoaderState() {
         try {
-            mMainThreadExecutor.execute(
-                    () -> LauncherAppState.getInstance(
-                            mTargetContext).getModel().forceReload());
+            mMainThreadExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    LauncherAppState.getInstance(mTargetContext).getModel().forceReload();
+                }
+            });
         } catch (Throwable t) {
             throw new IllegalArgumentException(t);
         }
-        mLauncher.waitForLauncherInitialized();
-    }
-
-    /**
-     * Adds {@param item} on the homescreen on the 0th screen
-     */
-    protected void addItemToScreen(ItemInfo item) {
-        WidgetUtils.addItemToScreen(item, mTargetContext);
-        resetLoaderState();
-
-        // Launch the home activity
-        mDevice.pressHome();
-        mLauncher.waitForLauncherInitialized();
     }
 
     /**
@@ -329,99 +235,52 @@ public abstract class AbstractLauncherUiTest {
      */
     protected <T> T getOnUiThread(final Callable<T> callback) {
         try {
-            return mMainThreadExecutor.submit(callback).get(DEFAULT_UI_TIMEOUT,
-                    TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            Log.e(TAG, "Timeout in getOnUiThread, sending SIGABRT", e);
-            Process.sendSignal(Process.myPid(), OsConstants.SIGABRT);
-            throw new RuntimeException(e);
-        } catch (Throwable e) {
+            return mMainThreadExecutor.submit(callback).get();
+        } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
-    protected <T> T getFromLauncher(Function<Launcher, T> f) {
-        if (!TestHelpers.isInLauncherProcess()) return null;
-        return getOnUiThread(() -> f.apply(mActivityMonitor.getActivity()));
-    }
-
-    protected void executeOnLauncher(Consumer<Launcher> f) {
-        getFromLauncher(launcher -> {
-            f.accept(launcher);
-            return null;
+    /**
+     * Finds a widget provider which can fit on the home screen.
+     * @param hasConfigureScreen if true, a provider with a config screen is returned.
+     */
+    protected LauncherAppWidgetProviderInfo findWidgetProvider(final boolean hasConfigureScreen) {
+        LauncherAppWidgetProviderInfo info =
+                getOnUiThread(new Callable<LauncherAppWidgetProviderInfo>() {
+            @Override
+            public LauncherAppWidgetProviderInfo call() throws Exception {
+                ComponentName cn = new ComponentName(getInstrumentation().getContext(),
+                        hasConfigureScreen ? AppWidgetWithConfig.class : AppWidgetNoConfig.class);
+                Log.d(TAG, "findWidgetProvider componentName=" + cn.flattenToString());
+                return AppWidgetManagerCompat.getInstance(mTargetContext)
+                        .findProvider(cn, Process.myUserHandle());
+            }
         });
+        if (info == null) {
+            throw new IllegalArgumentException("No valid widget provider");
+        }
+        return info;
     }
 
-    // Cannot be used in TaplTests between a Tapl call injecting a gesture and a tapl call
-    // expecting the results of that gesture because the wait can hide flakeness.
-    protected void waitForState(String message, Supplier<LauncherState> state) {
-        waitForLauncherCondition(message,
-                launcher -> launcher.getStateManager().getCurrentStableState() == state.get());
+    protected UiObject2 findViewById(int id) {
+        return mDevice.wait(Until.findObject(getSelectorForId(id)), DEFAULT_UI_TIMEOUT);
     }
 
-    // Cannot be used in TaplTests between a Tapl call injecting a gesture and a tapl call
-    // expecting the results of that gesture because the wait can hide flakeness.
-    protected void waitForStateTransitionToEnd(String message, Supplier<LauncherState> state) {
-        waitForLauncherCondition(message,
-                launcher -> launcher.getStateManager().isInStableState(state.get())
-                        && !launcher.getStateManager().isInTransition());
-    }
-
-    protected void waitForResumed(String message) {
-        waitForLauncherCondition(message, launcher -> launcher.hasBeenResumed());
-    }
-
-    // Cannot be used in TaplTests after injecting any gesture using Tapl because this can hide
-    // flakiness.
-    protected void waitForLauncherCondition(String
-            message, Function<Launcher, Boolean> condition) {
-        waitForLauncherCondition(message, condition, DEFAULT_ACTIVITY_TIMEOUT);
-    }
-
-    // Cannot be used in TaplTests after injecting any gesture using Tapl because this can hide
-    // flakiness.
-    protected <T> T getOnceNotNull(String message, Function<Launcher, T> f) {
-        return getOnceNotNull(message, f, DEFAULT_ACTIVITY_TIMEOUT);
-    }
-
-    // Cannot be used in TaplTests after injecting any gesture using Tapl because this can hide
-    // flakiness.
-    protected void waitForLauncherCondition(
-            String message, Function<Launcher, Boolean> condition, long timeout) {
-        if (!TestHelpers.isInLauncherProcess()) return;
-        Wait.atMost(message, () -> getFromLauncher(condition), timeout, mLauncher);
-    }
-
-    // Cannot be used in TaplTests after injecting any gesture using Tapl because this can hide
-    // flakiness.
-    protected <T> T getOnceNotNull(String message, Function<Launcher, T> f, long timeout) {
-        if (!TestHelpers.isInLauncherProcess()) return null;
-
-        final Object[] output = new Object[1];
-        Wait.atMost(message, () -> {
-            final Object fromLauncher = getFromLauncher(f);
-            output[0] = fromLauncher;
-            return fromLauncher != null;
-        }, timeout, mLauncher);
-        return (T) output[0];
-    }
-
-    // Cannot be used in TaplTests after injecting any gesture using Tapl because this can hide
-    // flakiness.
-    protected void waitForLauncherCondition(
-            String message,
-            Runnable testThreadAction, Function<Launcher, Boolean> condition,
-            long timeout) {
-        if (!TestHelpers.isInLauncherProcess()) return;
-        Wait.atMost(message, () -> {
-            testThreadAction.run();
-            return getFromLauncher(condition);
-        }, timeout, mLauncher);
+    protected BySelector getSelectorForId(int id) {
+        String name = mTargetContext.getResources().getResourceEntryName(id);
+        return By.res(mTargetPackage, name);
     }
 
     protected LauncherActivityInfo getSettingsApp() {
-        return mTargetContext.getSystemService(LauncherApps.class)
-                .getActivityList("com.android.settings", Process.myUserHandle()).get(0);
+        return LauncherAppsCompat.getInstance(mTargetContext)
+                .getActivityList("com.android.settings",
+                        Process.myUserHandle()).get(0);
+    }
+
+    protected LauncherActivityInfo getChromeApp() {
+        return LauncherAppsCompat.getInstance(mTargetContext)
+                .getActivityList("com.android.chrome", Process.myUserHandle()).get(0);
     }
 
     /**
@@ -450,155 +309,7 @@ public abstract class AbstractLauncherUiTest {
 
         public Intent blockingGetExtraIntent() throws InterruptedException {
             Intent intent = blockingGetIntent();
-            return intent == null ? null : (Intent) intent.getParcelableExtra(
-                    Intent.EXTRA_INTENT);
+            return intent == null ? null : (Intent) intent.getParcelableExtra(Intent.EXTRA_INTENT);
         }
-    }
-
-    public static void startAppFast(String packageName) {
-        startIntent(
-                getInstrumentation().getContext().getPackageManager().getLaunchIntentForPackage(
-                        packageName),
-                By.pkg(packageName).depth(0),
-                true /* newTask */);
-    }
-
-    public static void startTestActivity(int activityNumber) {
-        final String packageName = getAppPackageName();
-        final Intent intent = getInstrumentation().getContext().getPackageManager().
-                getLaunchIntentForPackage(packageName);
-        intent.setComponent(new ComponentName(packageName,
-                "com.android.launcher3.tests.Activity" + activityNumber));
-        startIntent(intent, By.pkg(packageName).text("TestActivity" + activityNumber),
-                false /* newTask */);
-    }
-
-    private static void startIntent(Intent intent, BySelector selector, boolean newTask) {
-        intent.addCategory(Intent.CATEGORY_LAUNCHER);
-        if (newTask) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        } else {
-            intent.addFlags(
-                    Intent.FLAG_ACTIVITY_MULTIPLE_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
-        }
-        getInstrumentation().getTargetContext().startActivity(intent);
-        assertTrue("App didn't start: " + selector,
-                TestHelpers.wait(Until.hasObject(selector), DEFAULT_UI_TIMEOUT));
-    }
-
-    public static ActivityInfo resolveSystemAppInfo(String category) {
-        return getInstrumentation().getContext().getPackageManager().resolveActivity(
-                new Intent(Intent.ACTION_MAIN).addCategory(category),
-                PackageManager.MATCH_SYSTEM_ONLY).
-                activityInfo;
-    }
-
-
-    public static String resolveSystemApp(String category) {
-        return resolveSystemAppInfo(category).packageName;
-    }
-
-    protected void closeLauncherActivity() {
-        // Destroy Launcher activity.
-        executeOnLauncher(launcher -> {
-            if (launcher != null) {
-                onLauncherActivityClose(launcher);
-                launcher.finish();
-            }
-        });
-        waitForLauncherCondition(
-                "Launcher still active", launcher -> launcher == null, DEFAULT_UI_TIMEOUT);
-    }
-
-    protected boolean isInBackground(Launcher launcher) {
-        return launcher == null || !launcher.hasBeenResumed();
-    }
-
-    protected boolean isInState(Supplier<LauncherState> state) {
-        if (!TestHelpers.isInLauncherProcess()) return true;
-        return getFromLauncher(
-                launcher -> launcher.getStateManager().getState() == state.get());
-    }
-
-    protected int getAllAppsScroll(Launcher launcher) {
-        return launcher.getAppsView().getActiveRecyclerView().getCurrentScrollY();
-    }
-
-    private void checkLauncherIntegrity(
-            Launcher launcher, ContainerType expectedContainerType) {
-        if (launcher != null) {
-            final StateManager<LauncherState> stateManager = launcher.getStateManager();
-            final LauncherState stableState = stateManager.getCurrentStableState();
-
-            assertTrue("Stable state != state: " + stableState.getClass().getSimpleName() + ", "
-                            + stateManager.getState().getClass().getSimpleName(),
-                    stableState == stateManager.getState());
-
-            final boolean isResumed = launcher.hasBeenResumed();
-            final boolean isStarted = launcher.isStarted();
-            checkLauncherState(launcher, expectedContainerType, isResumed, isStarted);
-
-            final int ordinal = stableState.ordinal;
-
-            switch (expectedContainerType) {
-                case WORKSPACE:
-                case WIDGETS: {
-                    assertTrue(
-                            "Launcher is not resumed in state: " + expectedContainerType,
-                            isResumed);
-                    assertTrue(TestProtocol.stateOrdinalToString(ordinal),
-                            ordinal == TestProtocol.NORMAL_STATE_ORDINAL);
-                    break;
-                }
-                case ALL_APPS: {
-                    assertTrue(
-                            "Launcher is not resumed in state: " + expectedContainerType,
-                            isResumed);
-                    assertTrue(TestProtocol.stateOrdinalToString(ordinal),
-                            ordinal == TestProtocol.ALL_APPS_STATE_ORDINAL);
-                    break;
-                }
-                case OVERVIEW: {
-                    checkLauncherStateInOverview(launcher, expectedContainerType, isStarted,
-                            isResumed);
-                    assertTrue(TestProtocol.stateOrdinalToString(ordinal),
-                            ordinal == TestProtocol.OVERVIEW_STATE_ORDINAL);
-                    break;
-                }
-                case BACKGROUND: {
-                    assertTrue("Launcher is resumed in state: " + expectedContainerType,
-                            !isResumed);
-                    assertTrue(TestProtocol.stateOrdinalToString(ordinal),
-                            ordinal == TestProtocol.NORMAL_STATE_ORDINAL);
-                    break;
-                }
-                default:
-                    throw new IllegalArgumentException(
-                            "Illegal container: " + expectedContainerType);
-            }
-        } else {
-            assertTrue(
-                    "Container type is not BACKGROUND or FALLBACK_OVERVIEW: "
-                            + expectedContainerType,
-                    expectedContainerType == ContainerType.BACKGROUND ||
-                            expectedContainerType == ContainerType.FALLBACK_OVERVIEW);
-        }
-    }
-
-    protected void checkLauncherState(Launcher launcher, ContainerType expectedContainerType,
-            boolean isResumed, boolean isStarted) {
-        assertTrue("hasBeenResumed() != isStarted(), hasBeenResumed(): " + isResumed,
-                isResumed == isStarted);
-        assertTrue("hasBeenResumed() != isUserActive(), hasBeenResumed(): " + isResumed,
-                isResumed == launcher.isUserActive());
-    }
-
-    protected void checkLauncherStateInOverview(Launcher launcher,
-            ContainerType expectedContainerType, boolean isStarted, boolean isResumed) {
-        assertTrue("Launcher is not resumed in state: " + expectedContainerType,
-                isResumed);
-    }
-
-    protected void onLauncherActivityClose(Launcher launcher) {
     }
 }

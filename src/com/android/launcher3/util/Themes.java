@@ -16,107 +16,28 @@
 
 package com.android.launcher3.util;
 
-import static app.lawnchair.wallpaper.WallpaperColorsCompat.HINT_SUPPORTS_DARK_TEXT;
-import static app.lawnchair.wallpaper.WallpaperColorsCompat.HINT_SUPPORTS_DARK_THEME;
-
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.drawable.Drawable;
-import android.util.AttributeSet;
-import android.util.SparseArray;
-import android.util.TypedValue;
-import android.view.ContextThemeWrapper;
 
-import com.android.launcher3.R;
-import com.android.launcher3.Utilities;
-import com.android.launcher3.config.FeatureFlags;
-import com.android.launcher3.icons.GraphicsUtils;
-
-import app.lawnchair.theme.color.ColorTokens;
-import app.lawnchair.wallpaper.WallpaperColorsCompat;
-import app.lawnchair.wallpaper.WallpaperManagerCompat;
-import app.lawnchair.ui.theme.ColorKt;
+import ch.deletescape.lawnchair.colors.ColorEngine;
 
 /**
  * Various utility methods associated with theming.
  */
-@SuppressWarnings("NewApi")
 public class Themes {
 
-    public static final String KEY_THEMED_ICONS = "themed_icons";
-
-    public static int getActivityThemeRes(Context context) {
-        WallpaperColorsCompat colors = WallpaperManagerCompat.INSTANCE.get(context).getWallpaperColors();
-        final int colorHints = colors != null ? colors.getColorHints() : 0;
-        return getActivityThemeRes(context, colorHints);
-    }
-
-    public static Context createWidgetPreviewContext(Context context) {
-        if (Utilities.isDarkTheme(context)) {
-            return new ContextThemeWrapper(context, R.style.AppTheme_Dark);
-        } else {
-            return new ContextThemeWrapper(context, R.style.AppTheme_DarkText);
-        }
-    }
-
-    public static int getActivityThemeRes(Context context, int wallpaperColorHints) {
-        boolean supportsDarkText = (wallpaperColorHints & HINT_SUPPORTS_DARK_TEXT) != 0;
-        boolean isMainColorDark = (wallpaperColorHints & HINT_SUPPORTS_DARK_THEME) != 0;
-
-        if (Utilities.isDarkTheme(context)) {
-            return supportsDarkText ? R.style.AppTheme_Dark_DarkText
-                    : isMainColorDark ? R.style.AppTheme_Dark_DarkMainColor : R.style.AppTheme_Dark;
-        } else {
-            return supportsDarkText ? R.style.AppTheme_DarkText
-                    : isMainColorDark ? R.style.AppTheme_DarkMainColor : R.style.AppTheme;
-        }
-    }
-
-    /**
-     * Returns true if workspace icon theming is enabled
-     */
-    public static boolean isThemedIconEnabled(Context context) {
-        return FeatureFlags.ENABLE_THEMED_ICONS.get()
-                && Utilities.getPrefs(context).getBoolean(KEY_THEMED_ICONS, false);
-    }
-
-    public static String getDefaultBodyFont(Context context) {
-        TypedArray ta = context.obtainStyledAttributes(android.R.style.TextAppearance_DeviceDefault,
-                new int[]{android.R.attr.fontFamily});
-        String value = ta.getString(0);
-        ta.recycle();
-        return value;
-    }
-
-    public static float getDialogCornerRadius(Context context) {
-        return context.getResources().getDimension(R.dimen.lawnchair_dialog_corner_radius);
-    }
-
-    public static float getDimension(Context context, int attr, float defaultValue) {
-        TypedArray ta = context.obtainStyledAttributes(new int[]{attr});
-        float value = ta.getDimension(0, defaultValue);
-        ta.recycle();
-        return value;
-    }
-
     public static int getColorAccent(Context context) {
-        return ColorKt.getAccentColor(context);
-    }
-
-    /** Returns the background color attribute. */
-    public static int getColorBackground(Context context) {
-        return ColorTokens.ColorBackground.resolveColor(context);
-    }
-
-    /** Returns the floating background color attribute. */
-    public static int getColorBackgroundFloating(Context context) {
-        return ColorTokens.ColorBackgroundFloating.resolveColor(context);
+        return ColorEngine.getInstance(context).getAccent();
     }
 
     public static int getAttrColor(Context context, int attr) {
-        return GraphicsUtils.getAttrColor(context, attr);
+        TypedArray ta = context.obtainStyledAttributes(new int[]{attr});
+        int colorAccent = ta.getColor(0, 0);
+        ta.recycle();
+        return colorAccent;
     }
 
     public static boolean getAttrBoolean(Context context, int attr) {
@@ -140,12 +61,26 @@ public class Themes {
         return value;
     }
 
+    public static int getAttrResource(Context context, int attr) {
+        TypedArray ta = context.obtainStyledAttributes(new int[]{attr});
+        int value = ta.getResourceId(0, 0);
+        ta.recycle();
+        return value;
+    }
+
+    /**
+     * Returns the alpha corresponding to the theme attribute {@param attr}, in the range [0, 255].
+     */
+    public static int getAlpha(Context context, int attr) {
+        TypedArray ta = context.obtainStyledAttributes(new int[]{attr});
+        float alpha = ta.getFloat(0, 0);
+        ta.recycle();
+        return (int) (255 * alpha + 0.5f);
+    }
+
     /**
      * Scales a color matrix such that, when applied to color R G B A, it produces R' G' B' A' where
-     * R' = r * R
-     * G' = g * G
-     * B' = b * B
-     * A' = a * A
+     * R' = r * R G' = g * G B' = b * B A' = a * A
      *
      * The matrix will, for instance, turn white into r g b a, and black will remain black.
      *
@@ -174,30 +109,5 @@ public class Themes {
         target.getArray()[9] = Color.green(dstColor) - Color.green(srcColor);
         target.getArray()[14] = Color.blue(dstColor) - Color.blue(srcColor);
         target.getArray()[19] = Color.alpha(dstColor) - Color.alpha(srcColor);
-    }
-
-    /**
-     * Creates a map for attribute-name to value for all the values in {@param attrs} which can be
-     * held in memory for later use.
-     */
-    public static SparseArray<TypedValue> createValueMap(Context context, AttributeSet attrSet,
-            IntArray keysToIgnore) {
-        int count = attrSet.getAttributeCount();
-        IntArray attrNameArray = new IntArray(count);
-        for (int i = 0; i < count; i++) {
-            attrNameArray.add(attrSet.getAttributeNameResource(i));
-        }
-        attrNameArray.removeAllValues(keysToIgnore);
-
-        int[] attrNames = attrNameArray.toArray();
-        SparseArray<TypedValue> result = new SparseArray<>(attrNames.length);
-        TypedArray ta = context.obtainStyledAttributes(attrSet, attrNames);
-        for (int i = 0; i < attrNames.length; i++) {
-            TypedValue tv = new TypedValue();
-            ta.getValue(i, tv);
-            result.put(attrNames[i], tv);
-        }
-
-        return result;
     }
 }

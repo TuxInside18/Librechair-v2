@@ -16,9 +16,6 @@
 
 package com.android.launcher3.widget;
 
-import static com.android.launcher3.graphics.PreloadIconDrawable.newPendingIcon;
-import static com.android.launcher3.widget.WidgetSections.getWidgetSections;
-
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -29,27 +26,21 @@ import android.os.Bundle;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
-import android.util.SizeF;
 import android.util.TypedValue;
 import android.view.ContextThemeWrapper;
 import android.view.View;
 import android.view.View.OnClickListener;
-import android.widget.RemoteViews;
-
-import androidx.annotation.Nullable;
-
 import com.android.launcher3.DeviceProfile;
+import com.android.launcher3.FastBitmapDrawable;
+import com.android.launcher3.IconCache;
+import com.android.launcher3.IconCache.ItemInfoUpdateReceiver;
+import com.android.launcher3.ItemInfoWithIcon;
+import com.android.launcher3.LauncherAppWidgetInfo;
 import com.android.launcher3.R;
-import com.android.launcher3.icons.FastBitmapDrawable;
-import com.android.launcher3.icons.IconCache;
-import com.android.launcher3.icons.IconCache.ItemInfoUpdateReceiver;
-import com.android.launcher3.model.data.ItemInfoWithIcon;
-import com.android.launcher3.model.data.LauncherAppWidgetInfo;
-import com.android.launcher3.model.data.PackageItemInfo;
+import com.android.launcher3.graphics.DrawableFactory;
+import com.android.launcher3.model.PackageItemInfo;
 import com.android.launcher3.touch.ItemClickHandler;
 import com.android.launcher3.util.Themes;
-
-import java.util.List;
 
 public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
         implements OnClickListener, ItemInfoUpdateReceiver {
@@ -57,6 +48,7 @@ public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
     private static final float MIN_SATUNATION = 0.7f;
 
     private final Rect mRect = new Rect();
+    private View mDefaultView;
     private OnClickListener mClickListener;
     private final LauncherAppWidgetInfo mInfo;
     private final int mStartState;
@@ -85,24 +77,16 @@ public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
         setBackgroundResource(R.drawable.pending_widget_bg);
         setWillNotDraw(false);
 
-        super.updateAppWidget(null);
+        setElevation(getResources().getDimension(R.dimen.pending_widget_elevation));
+        updateAppWidget(null);
         setOnClickListener(ItemClickHandler.INSTANCE);
 
         if (info.pendingItemInfo == null) {
-            info.pendingItemInfo = new PackageItemInfo(info.providerName.getPackageName(),
-                    info.user);
+            info.pendingItemInfo = new PackageItemInfo(info.providerName.getPackageName());
+            info.pendingItemInfo.user = info.user;
             cache.updateIconInBackground(this, info.pendingItemInfo);
         } else {
             reapplyItemInfo(info.pendingItemInfo);
-        }
-    }
-
-    @Override
-    public void updateAppWidget(RemoteViews remoteViews) {
-        WidgetManagerHelper widgetManagerHelper = new WidgetManagerHelper(getContext());
-        if (widgetManagerHelper.isAppWidgetRestored(mInfo.appWidgetId)) {
-            super.updateAppWidget(remoteViews);
-            reInflate();
         }
     }
 
@@ -113,17 +97,13 @@ public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
     }
 
     @Override
-    public void updateAppWidgetSize(Bundle newOptions, List<SizeF> sizes) {
-        // No-op
-    }
-
-    @Override
     protected View getDefaultView() {
-        View defaultView = mInflater.inflate(R.layout.appwidget_not_ready, this, false);
-        defaultView.setOnClickListener(this);
-        applyState();
-        invalidate();
-        return defaultView;
+        if (mDefaultView == null) {
+            mDefaultView = mInflater.inflate(R.layout.appwidget_not_ready, this, false);
+            mDefaultView.setOnClickListener(this);
+            applyState();
+        }
+        return mDefaultView;
     }
 
     @Override
@@ -147,33 +127,24 @@ public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
             mCenterDrawable.setCallback(null);
             mCenterDrawable = null;
         }
-        if (info.bitmap.icon != null) {
-            Drawable widgetCategoryIcon = getWidgetCategoryIcon();
+        if (info.iconBitmap != null) {
             // The view displays three modes,
-            //   1) App icon in the center
-            //   2) Preload icon in the center
-            //   3) App icon in the center with a setup icon on the top left corner.
+            //   1) App iconView in the center
+            //   2) Preload iconView in the center
+            //   3) Setup iconView in the center and app iconView in the top right corner.
+            DrawableFactory drawableFactory = DrawableFactory.get(getContext());
             if (mDisabledForSafeMode) {
-                if (widgetCategoryIcon == null) {
-                    FastBitmapDrawable disabledIcon = info.newIcon(getContext());
-                    disabledIcon.setIsDisabled(true);
-                    mCenterDrawable = disabledIcon;
-                } else {
-                    widgetCategoryIcon.setColorFilter(
-                            FastBitmapDrawable.getDisabledFColorFilter(/* disabledAlpha= */ 1f));
-                    mCenterDrawable = widgetCategoryIcon;
-                }
+                FastBitmapDrawable disabledIcon = drawableFactory.newIcon(info);
+                disabledIcon.setIsDisabled(true);
+                mCenterDrawable = disabledIcon;
                 mSettingIconDrawable = null;
             } else if (isReadyForClickSetup()) {
-                mCenterDrawable = widgetCategoryIcon == null
-                        ? info.newIcon(getContext())
-                        : widgetCategoryIcon;
+                mCenterDrawable = drawableFactory.newIcon(info);
                 mSettingIconDrawable = getResources().getDrawable(R.drawable.ic_setting).mutate();
-                updateSettingColor(info.bitmap.color);
+                updateSettingColor(info.iconColor);
             } else {
-                mCenterDrawable = widgetCategoryIcon == null
-                        ? newPendingIcon(getContext(), info)
-                        : widgetCategoryIcon;
+                mCenterDrawable = DrawableFactory.get(getContext())
+                        .newPendingIcon(info, getContext());
                 mSettingIconDrawable = null;
                 applyState();
             }
@@ -251,7 +222,7 @@ public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
             float iconSize = Math.max(0, Math.min(availableWidth, availableHeight));
 
             // Use twice the setting size factor, as the setting is drawn at a corner and the
-            // icon is drawn in the center.
+            // iconView is drawn in the center.
             float settingIconScaleFactor = 1 + SETUP_ICON_SIZE_FACTOR * 2;
             int maxSize = Math.max(availableWidth, availableHeight);
             if (iconSize * settingIconScaleFactor > maxSize) {
@@ -268,11 +239,11 @@ public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
             if (availableWidth > 0) {
                 // Recreate the setup text.
                 mSetupTextLayout = new StaticLayout(
-                        getResources().getText(R.string.gadget_complete_setup_text), mPaint,
-                        availableWidth, Layout.Alignment.ALIGN_CENTER, 1, 0, true);
+                        getResources().getText(R.string.gadget_setup_text), mPaint, availableWidth,
+                        Layout.Alignment.ALIGN_CENTER, 1, 0, true);
                 int textHeight = mSetupTextLayout.getHeight();
 
-                // Extra icon size due to the setting icon
+                // Extra iconView size due to the setting iconView
                 float minHeightWithText = textHeight + actualIconSize * settingIconScaleFactor
                         + grid.iconDrawablePaddingPx;
 
@@ -328,21 +299,5 @@ public class PendingAppWidgetHostView extends LauncherAppWidgetHostView
             canvas.restore();
         }
 
-    }
-
-    /**
-     * Returns the widget category icon for {@link #mInfo}.
-     *
-     * <p>If {@link #mInfo}'s category is {@code PackageItemInfo#NO_CATEGORY} or unknown, returns
-     * {@code null}.
-     */
-    @Nullable
-    private Drawable getWidgetCategoryIcon() {
-        if (mInfo.pendingItemInfo.widgetCategory == WidgetSections.NO_CATEGORY) {
-            return null;
-        }
-        Context context = getContext();
-        return context.getDrawable(getWidgetSections(context).get(
-                mInfo.pendingItemInfo.widgetCategory).mSectionDrawable);
     }
 }

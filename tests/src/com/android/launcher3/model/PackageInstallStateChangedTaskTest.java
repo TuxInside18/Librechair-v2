@@ -1,17 +1,13 @@
 package com.android.launcher3.model;
 
-import static org.junit.Assert.assertEquals;
-
 import androidx.test.ext.junit.runners.AndroidJUnit4;
-import androidx.test.filters.SmallTest;
 
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.LauncherAppWidgetInfo;
-import com.android.launcher3.model.data.WorkspaceItemInfo;
-import com.android.launcher3.pm.PackageInstallInfo;
-import com.android.launcher3.util.LauncherModelHelper;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.LauncherAppWidgetInfo;
+import com.android.launcher3.ShortcutInfo;
+import com.android.launcher3.compat.PackageInstallerCompat;
+import com.android.launcher3.compat.PackageInstallerCompat.PackageInstallInfo;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -19,36 +15,28 @@ import org.junit.runner.RunWith;
 import java.util.Arrays;
 import java.util.HashSet;
 
+import static org.junit.Assert.assertEquals;
+
 /**
  * Tests for {@link PackageInstallStateChangedTask}
  */
-@SmallTest
 @RunWith(AndroidJUnit4.class)
-public class PackageInstallStateChangedTaskTest {
-
-    private LauncherModelHelper mModelHelper;
+public class PackageInstallStateChangedTaskTest extends BaseModelUpdateTaskTestCase {
 
     @Before
-    public void setup() throws Exception {
-        mModelHelper = new LauncherModelHelper();
-        mModelHelper.initializeData("package_install_state_change_task_data");
-    }
-
-    @After
-    public void tearDown() {
-        mModelHelper.destroy();
+    public void initData() throws Exception {
+        initializeData("package_install_state_change_task_data");
     }
 
     private PackageInstallStateChangedTask newTask(String pkg, int progress) {
-        int state = PackageInstallInfo.STATUS_INSTALLING;
-        PackageInstallInfo installInfo = new PackageInstallInfo(pkg, state, progress,
-                android.os.Process.myUserHandle());
+        int state = PackageInstallerCompat.STATUS_INSTALLING;
+        PackageInstallInfo installInfo = new PackageInstallInfo(pkg, state, progress);
         return new PackageInstallStateChangedTask(installInfo);
     }
 
     @Test
     public void testSessionUpdate_ignore_installed() throws Exception {
-        mModelHelper.executeTaskForTest(newTask("app1", 30));
+        executeTaskForTest(newTask("app1", 30));
 
         // No shortcuts were updated
         verifyProgressUpdate(0);
@@ -56,24 +44,24 @@ public class PackageInstallStateChangedTaskTest {
 
     @Test
     public void testSessionUpdate_shortcuts_updated() throws Exception {
-        mModelHelper.executeTaskForTest(newTask("app3", 30));
+        executeTaskForTest(newTask("app3", 30));
 
-        verifyProgressUpdate(30, 5, 6, 7);
+        verifyProgressUpdate(30, 5L, 6L, 7L);
     }
 
     @Test
     public void testSessionUpdate_widgets_updated() throws Exception {
-        mModelHelper.executeTaskForTest(newTask("app4", 30));
+        executeTaskForTest(newTask("app4", 30));
 
-        verifyProgressUpdate(30, 8, 9);
+        verifyProgressUpdate(30, 8L, 9L);
     }
 
-    private void verifyProgressUpdate(int progress, Integer... idsUpdated) {
-        HashSet<Integer> updates = new HashSet<>(Arrays.asList(idsUpdated));
-        for (ItemInfo info : mModelHelper.getBgDataModel().itemsIdMap) {
-            if (info instanceof WorkspaceItemInfo) {
-                assertEquals(updates.contains(info.id) ? progress: 100,
-                        ((WorkspaceItemInfo) info).getProgressLevel());
+    private void verifyProgressUpdate(int progress, Long... idsUpdated) {
+        HashSet<Long> updates = new HashSet<>(Arrays.asList(idsUpdated));
+        for (ItemInfo info : bgDataModel.itemsIdMap) {
+            if (info instanceof ShortcutInfo) {
+                assertEquals(updates.contains(info.id) ? progress: 0,
+                        ((ShortcutInfo) info).getInstallProgress());
             } else {
                 assertEquals(updates.contains(info.id) ? progress: -1,
                         ((LauncherAppWidgetInfo) info).installProgress);

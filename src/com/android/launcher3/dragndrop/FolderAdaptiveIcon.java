@@ -16,51 +16,42 @@
 
 package com.android.launcher3.dragndrop;
 
-import static com.android.launcher3.util.Executors.MAIN_EXECUTOR;
-
 import android.annotation.TargetApi;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.ColorFilter;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PixelFormat;
 import android.graphics.Point;
-import android.graphics.Rect;
-import android.graphics.drawable.AdaptiveIconDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.util.Log;
-
-import androidx.annotation.Nullable;
-
+import ch.deletescape.lawnchair.iconpack.AdaptiveIconCompat;
+import com.android.launcher3.Launcher;
+import com.android.launcher3.MainThreadExecutor;
+import com.android.launcher3.R;
 import com.android.launcher3.folder.FolderIcon;
 import com.android.launcher3.folder.PreviewBackground;
-import com.android.launcher3.graphics.IconShape;
-import com.android.launcher3.graphics.ShiftedBitmapDrawable;
-import com.android.launcher3.icons.BitmapRenderer;
+import com.android.launcher3.graphics.BitmapRenderer;
 import com.android.launcher3.util.Preconditions;
-import com.android.launcher3.views.ActivityContext;
-
-import app.lawnchair.icons.CustomAdaptiveIconDrawable;
 
 /**
- * {@link AdaptiveIconDrawable} representation of a {@link FolderIcon}
+ * {@link AdaptiveIconCompat} representation of a {@link FolderIcon}
  */
 @TargetApi(Build.VERSION_CODES.O)
-public class FolderAdaptiveIcon extends CustomAdaptiveIconDrawable {
+public class FolderAdaptiveIcon extends AdaptiveIconCompat {
     private static final String TAG = "FolderAdaptiveIcon";
 
     private final Drawable mBadge;
     private final Path mMask;
-    private final ConstantState mConstantState;
-    private static final Rect sTmpRect = new Rect();
 
     private FolderAdaptiveIcon(Drawable bg, Drawable fg, Drawable badge, Path mask) {
         super(bg, fg);
         mBadge = badge;
         mMask = mask;
-
-        mConstantState = new MyConstantState(bg.getConstantState(), fg.getConstantState(),
-                badge.getConstantState(), mask);
     }
 
     @Override
@@ -72,17 +63,22 @@ public class FolderAdaptiveIcon extends CustomAdaptiveIconDrawable {
         return mBadge;
     }
 
-    public static @Nullable FolderAdaptiveIcon createFolderAdaptiveIcon(
-            ActivityContext activity, int folderId, Point dragViewSize) {
+    public static FolderAdaptiveIcon createFolderAdaptiveIcon(
+            Launcher launcher, long folderId, Point dragViewSize) {
         Preconditions.assertNonUiThread();
+        int margin = launcher.getResources()
+                .getDimensionPixelSize(R.dimen.blur_size_medium_outline);
+
+        // Allocate various bitmaps on the background thread, because why not!
+        final Bitmap badge = Bitmap.createBitmap(
+                dragViewSize.x - margin, dragViewSize.y - margin, Bitmap.Config.ARGB_8888);
 
         // Create the actual drawable on the UI thread to avoid race conditions with
         // FolderIcon draw pass
         try {
-            return MAIN_EXECUTOR.submit(() -> {
-                FolderIcon icon = activity.findFolderIcon(folderId);
-                return icon == null ? null : createDrawableOnUiThread(icon, dragViewSize);
-
+            return new MainThreadExecutor().submit(() -> {
+                FolderIcon icon = launcher.findFolderIcon(folderId);
+                return icon == null ? null : createDrawableOnUiThread(icon, badge, dragViewSize);
             }).get();
         } catch (Exception e) {
             Log.e(TAG, "Unable to create folder icon", e);
@@ -90,98 +86,85 @@ public class FolderAdaptiveIcon extends CustomAdaptiveIconDrawable {
         }
     }
 
+    /**
+     * Initializes various bitmaps on the UI thread and returns the final drawable.
+     */
     private static FolderAdaptiveIcon createDrawableOnUiThread(FolderIcon icon,
-                                                               Point dragViewSize) {
+            Bitmap badgeBitmap, Point dragViewSize) {
         Preconditions.assertUIThread();
+        float margin = icon.getResources().getDimension(R.dimen.blur_size_medium_outline) / 2;
 
-        icon.getPreviewBounds(sTmpRect);
-
+        Canvas c = new Canvas();
         PreviewBackground bg = icon.getFolderBackground();
 
-        // assume square
-        assert (dragViewSize.x == dragViewSize.y);
-        final int previewSize = sTmpRect.width();
+        // Initialize badge
+        c.setBitmap(badgeBitmap);
+        bg.drawShadow(c);
+        bg.drawBackgroundStroke(c);
+        icon.drawBadge(c);
 
-        final int margin = (dragViewSize.x - previewSize) / 2;
-        final float previewShiftX = -sTmpRect.left + margin;
-        final float previewShiftY = -sTmpRect.top + margin;
+        // Initialize preview
+        final float sizeScaleFactor = 1 + 2 * AdaptiveIconCompat.getExtraInsetFraction();
+        final int previewWidth = (int) (dragViewSize.x * sizeScaleFactor);
+        final int previewHeight = (int) (dragViewSize.y * sizeScaleFactor);
 
-        // Initialize badge, which consists of the outline stroke, shadow and dot; these
-        // must be rendered above the foreground
-        Bitmap badgeBmp = BitmapRenderer.createHardwareBitmap(dragViewSize.x, dragViewSize.y,
+        final float shiftFactor = AdaptiveIconCompat.getExtraInsetFraction() / sizeScaleFactor;
+        final float previewShiftX = shiftFactor * previewWidth;
+        final float previewShiftY = shiftFactor * previewHeight;
+
+        Bitmap previewBitmap = BitmapRenderer.createHardwareBitmap(previewWidth, previewHeight,
                 (canvas) -> {
-                    canvas.save();
+                    int count = canvas.save();
                     canvas.translate(previewShiftX, previewShiftY);
-                    bg.drawShadow(canvas);
-                    bg.drawBackgroundStroke(canvas);
-                    icon.drawDot(canvas);
-                    canvas.restore();
+                    icon.getPreviewItemManager().draw(canvas);
+                    canvas.restoreToCount(count);
                 });
 
         // Initialize mask
         Path mask = new Path();
         Matrix m = new Matrix();
-        m.setTranslate(previewShiftX, previewShiftY);
+        m.setTranslate(margin, margin);
         bg.getClipPath().transform(m, mask);
 
-        Bitmap previewBitmap = BitmapRenderer.createHardwareBitmap(dragViewSize.x, dragViewSize.y,
-                (canvas) -> {
-                    canvas.save();
-                    canvas.translate(previewShiftX, previewShiftY);
-                    icon.getPreviewItemManager().draw(canvas);
-                    canvas.restore();
-                });
+        ShiftedBitmapDrawable badge = new ShiftedBitmapDrawable(badgeBitmap, margin, margin);
+        ShiftedBitmapDrawable foreground = new ShiftedBitmapDrawable(previewBitmap,
+                margin - previewShiftX, margin - previewShiftY);
 
-        Bitmap bgBitmap = BitmapRenderer.createHardwareBitmap(dragViewSize.x, dragViewSize.y,
-                (canvas) -> {
-                    Paint p = new Paint();
-                    p.setColor(bg.getBgColor());
-
-                    Path bgPath = new Path();
-                    int radius = bg.getRadius();
-                    IconShape.getShape().addToPath(
-                            bgPath,
-                            dragViewSize.x / 2f - radius,
-                            dragViewSize.y / 2f - radius,
-                            radius);
-                    canvas.drawPath(bgPath, p);
-                });
-
-        ShiftedBitmapDrawable badge = new ShiftedBitmapDrawable(badgeBmp, 0, 0);
-        ShiftedBitmapDrawable foreground = new ShiftedBitmapDrawable(previewBitmap, 0, 0);
-        ShiftedBitmapDrawable background = new ShiftedBitmapDrawable(bgBitmap, 0, 0);
-
-        return new FolderAdaptiveIcon(background, foreground, badge, mask);
+        return new FolderAdaptiveIcon(new ColorDrawable(bg.getBgColor()), foreground, badge, mask);
     }
 
-    @Override
-    public ConstantState getConstantState() {
-        return mConstantState;
-    }
+    /**
+     * A simple drawable which draws a bitmap at a fixed position irrespective of the bounds
+     */
+    private static class ShiftedBitmapDrawable extends Drawable {
 
-    private static class MyConstantState extends ConstantState {
-        private final ConstantState mBg;
-        private final ConstantState mFg;
-        private final ConstantState mBadge;
-        private final Path mMask;
+        private final Paint mPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        private final Bitmap mBitmap;
+        private final float mShiftX;
+        private final float mShiftY;
 
-        MyConstantState(ConstantState bg, ConstantState fg, ConstantState badge, Path mask) {
-            mBg = bg;
-            mFg = fg;
-            mBadge = badge;
-            mMask = mask;
+        ShiftedBitmapDrawable(Bitmap bitmap, float shiftX, float shiftY) {
+            mBitmap = bitmap;
+            mShiftX = shiftX;
+            mShiftY = shiftY;
         }
 
         @Override
-        public Drawable newDrawable() {
-            return new FolderAdaptiveIcon(mBg.newDrawable(), mFg.newDrawable(),
-                    mBadge.newDrawable(), mMask);
+        public void draw(Canvas canvas) {
+            canvas.drawBitmap(mBitmap, mShiftX, mShiftY, mPaint);
         }
 
         @Override
-        public int getChangingConfigurations() {
-            return mBg.getChangingConfigurations() & mFg.getChangingConfigurations()
-                    & mBadge.getChangingConfigurations();
+        public void setAlpha(int i) { }
+
+        @Override
+        public void setColorFilter(ColorFilter colorFilter) {
+            mPaint.setColorFilter(colorFilter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
         }
     }
 }

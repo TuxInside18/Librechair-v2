@@ -16,89 +16,101 @@
 
 package com.android.launcher3.dragndrop;
 
-import static android.view.View.MeasureSpec.EXACTLY;
-import static android.view.View.MeasureSpec.makeMeasureSpec;
-
-import static com.android.launcher3.LauncherAnimUtils.VIEW_ALPHA;
-import static com.android.launcher3.Utilities.getBadge;
-import static com.android.launcher3.util.Executors.MODEL_EXECUTOR;
+import static com.android.launcher3.ItemInfoWithIcon.FLAG_ICON_BADGED;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
-import android.animation.AnimatorSet;
-import android.animation.ObjectAnimator;
+import android.animation.FloatArrayEvaluator;
 import android.animation.ValueAnimator;
 import android.animation.ValueAnimator.AnimatorUpdateListener;
 import android.annotation.TargetApi;
-import android.content.Context;
+import android.content.pm.LauncherActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
+import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.Picture;
 import android.graphics.Point;
 import android.graphics.Rect;
-import android.graphics.drawable.AdaptiveIconDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.PictureDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.FrameLayout;
-import android.widget.ImageView;
-
-import androidx.annotation.Nullable;
 import androidx.dynamicanimation.animation.FloatPropertyCompat;
 import androidx.dynamicanimation.animation.SpringAnimation;
 import androidx.dynamicanimation.animation.SpringForce;
-
+import android.view.View;
+import ch.deletescape.lawnchair.LawnchairPreferences;
+import ch.deletescape.lawnchair.iconpack.AdaptiveIconCompat;
+import ch.deletescape.lawnchair.iconpack.IconPackManager;
+import ch.deletescape.lawnchair.iconpack.LawnchairIconProvider;
+import com.android.launcher3.FastBitmapDrawable;
+import com.android.launcher3.FolderInfo;
+import com.android.launcher3.IconProvider;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.ItemInfoWithIcon;
+import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAnimUtils;
+import com.android.launcher3.LauncherAppState;
+import com.android.launcher3.LauncherModel;
 import com.android.launcher3.LauncherSettings;
 import com.android.launcher3.R;
+import com.android.launcher3.ShortcutInfo;
 import com.android.launcher3.Utilities;
 import com.android.launcher3.anim.Interpolators;
-import com.android.launcher3.icons.FastBitmapDrawable;
-import com.android.launcher3.icons.LauncherIcons;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.util.RunnableList;
-import com.android.launcher3.views.ActivityContext;
-import com.android.launcher3.views.BaseDragLayer;
+import com.android.launcher3.compat.LauncherAppsCompat;
+import com.android.launcher3.compat.ShortcutConfigActivityInfo;
+import com.android.launcher3.config.FeatureFlags;
+import com.android.launcher3.graphics.LauncherIcons;
+import com.android.launcher3.shortcuts.DeepShortcutManager;
+import com.android.launcher3.shortcuts.ShortcutInfoCompat;
+import com.android.launcher3.shortcuts.ShortcutKey;
+import com.android.launcher3.util.Themes;
+import com.android.launcher3.util.Thunk;
+import com.android.launcher3.widget.PendingAddShortcutInfo;
+import java.util.Arrays;
+import java.util.List;
 
-import app.lawnchair.icons.CustomAdaptiveIconDrawable;
+public class DragView extends View {
+    private static final ColorMatrix sTempMatrix1 = new ColorMatrix();
+    private static final ColorMatrix sTempMatrix2 = new ColorMatrix();
 
-/** A custom view for rendering an icon, folder, shortcut or widget during drag-n-drop. */
-public abstract class DragView<T extends Context & ActivityContext> extends FrameLayout {
-
+    public static final int COLOR_CHANGE_DURATION = 120;
     public static final int VIEW_ZOOM_DURATION = 150;
 
-    private final View mContent;
-    // The following are only used for rendering mContent directly during drag-n-drop.
-    @Nullable private ViewGroup.LayoutParams mContentViewLayoutParams;
-    @Nullable private ViewGroup mContentViewParent;
-    private int mContentViewInParentViewIndex = -1;
-    private final int mWidth;
-    private final int mHeight;
+    @Thunk static float sDragAlpha = 1f;
 
+    private boolean mDrawBitmap = true;
+    private Bitmap mBitmap;
+    private Bitmap mCrossFadeBitmap;
+    @Thunk Paint mPaint;
     private final int mBlurSizeOutline;
-    protected final int mRegistrationX;
-    protected final int mRegistrationY;
+    private final int mRegistrationX;
+    private final int mRegistrationY;
     private final float mInitialScale;
-    protected final float mScaleOnDrop;
-    protected final int[] mTempLoc = new int[2];
-
-    private final RunnableList mOnDragStartCallback = new RunnableList();
+    private final float mScaleOnDrop;
+    private final int[] mTempLoc = new int[2];
 
     private Point mDragVisualizeOffset = null;
     private Rect mDragRegion = null;
-    protected final T mActivity;
-    private final BaseDragLayer<T> mDragLayer;
+    private final Launcher mLauncher;
+    private final DragLayer mDragLayer;
+    @Thunk final DragController mDragController;
     private boolean mHasDrawn = false;
+    @Thunk float mCrossFadeProgress = 0f;
+    private boolean mAnimationCancelled = false;
 
-    final ValueAnimator mAnim;
-    // Whether mAnim has started. Unlike mAnim.isStarted(), this is true even after mAnim ends.
-    private boolean mAnimStarted;
+    ValueAnimator mAnim;
+    // The intrinsic icon scale factor is the scale factor for a drag icon over the workspace
+    // size.  This is ignored for non-icons.
+    private float mIntrinsicIconScale = 1f;
+
+    @Thunk float[] mCurrentFilter;
+    private ValueAnimator mFilterAnimator;
 
     private int mLastTouchX;
     private int mLastTouchY;
@@ -110,80 +122,67 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
     private SpringFloatValue mTranslateX, mTranslateY;
     private Path mScaledMaskPath;
     private Drawable mBadge;
+    private ColorMatrixColorFilter mBaseFilter;
 
-    public DragView(T launcher, Drawable drawable, int registrationX,
-            int registrationY, final float initialScale, final float scaleOnDrop,
-            final float finalScaleDps) {
-        this(launcher, getViewFromDrawable(launcher, drawable),
-                drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(),
-                registrationX, registrationY, initialScale, scaleOnDrop, finalScaleDps);
-    }
+    private final IconProvider iconProvider;
+    private final LawnchairPreferences prefs;
 
     /**
      * Construct the drag view.
      * <p>
      * The registration point is the point inside our view that the touch events should
      * be centered upon.
-     * @param activity The Launcher instance/ActivityContext this DragView is in.
-     * @param content the view content that is attached to the drag view.
-     * @param width the width of the dragView
-     * @param height the height of the dragView
-     * @param initialScale The view that we're dragging around.  We scale it up when we draw it.
+     * @param launcher The Launcher instance
+     * @param bitmap The view that we're dragging around.  We scale it up when we draw it.
      * @param registrationX The x coordinate of the registration point.
      * @param registrationY The y coordinate of the registration point.
-     * @param scaleOnDrop the scale used in the drop animation.
-     * @param finalScaleDps the scale used in the zoom out animation when the drag view is shown.
      */
-    public DragView(T activity, View content, int width, int height, int registrationX,
-            int registrationY, final float initialScale, final float scaleOnDrop,
-            final float finalScaleDps) {
-        super(activity);
-        mActivity = activity;
-        mDragLayer = activity.getDragLayer();
+    public DragView(Launcher launcher, Bitmap bitmap, int registrationX, int registrationY,
+                    final float initialScale, final float scaleOnDrop, final float finalScaleDps) {
+        super(launcher);
+        mLauncher = launcher;
+        mDragLayer = launcher.getDragLayer();
+        mDragController = launcher.getDragController();
 
-        mContent = content;
-        mWidth = width;
-        mHeight = height;
-        mContentViewLayoutParams = mContent.getLayoutParams();
-        if (mContent.getParent() instanceof ViewGroup) {
-            mContentViewParent = (ViewGroup) mContent.getParent();
-            mContentViewInParentViewIndex = mContentViewParent.indexOfChild(mContent);
-            mContentViewParent.removeView(mContent);
-        }
+        iconProvider = IconProvider.newInstance(launcher);
 
-        addView(content, new LayoutParams(width, height));
-
-        // If there is already a scale set on the content, we don't want to clip the children.
-        if (content.getScaleX() != 1 || content.getScaleY() != 1) {
-            setClipChildren(false);
-            setClipToPadding(false);
-        }
-
-        final float scale = (width + finalScaleDps) / width;
+        final float scale = (bitmap.getWidth() + finalScaleDps) / bitmap.getWidth();
 
         // Set the initial scale to avoid any jumps
         setScaleX(initialScale);
         setScaleY(initialScale);
 
         // Animate the view into the correct position
-        mAnim = ValueAnimator.ofFloat(0f, 1f);
+        mAnim = LauncherAnimUtils.ofFloat(0f, 1f);
         mAnim.setDuration(VIEW_ZOOM_DURATION);
-        mAnim.addUpdateListener(animation -> {
-            final float value = (Float) animation.getAnimatedValue();
-            setScaleX(initialScale + (value * (scale - initialScale)));
-            setScaleY(initialScale + (value * (scale - initialScale)));
-            if (!isAttachedToWindow()) {
-                animation.cancel();
-            }
-        });
-        mAnim.addListener(new AnimatorListenerAdapter() {
+        mAnim.addUpdateListener(new AnimatorUpdateListener() {
             @Override
-            public void onAnimationStart(Animator animation) {
-                mAnimStarted = true;
+            public void onAnimationUpdate(ValueAnimator animation) {
+                final float value = (Float) animation.getAnimatedValue();
+
+                setScaleX(initialScale + (value * (scale - initialScale)));
+                setScaleY(initialScale + (value * (scale - initialScale)));
+                if (sDragAlpha != 1f) {
+                    setAlpha(sDragAlpha * value + (1f - value));
+                }
+
+                if (getParent() == null) {
+                    animation.cancel();
+                }
             }
         });
 
-        setDragRegion(new Rect(0, 0, width, height));
+        mAnim.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (!mAnimationCancelled) {
+                    mDragController.onDragViewAnimationEnd();
+                }
+            }
+        });
+
+        mBitmap = bitmap;
+        setDragRegion(new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight()));
 
         // The point in our scaled bitmap that the touch events are located
         mRegistrationX = registrationX;
@@ -193,117 +192,257 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
         mScaleOnDrop = scaleOnDrop;
 
         // Force a measure, because Workspace uses getMeasuredHeight() before the layout pass
-        measure(makeMeasureSpec(width, EXACTLY), makeMeasureSpec(height, EXACTLY));
+        int ms = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        measure(ms, ms);
+        mPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
 
         mBlurSizeOutline = getResources().getDimensionPixelSize(R.dimen.blur_size_medium_outline);
         setElevation(getResources().getDimension(R.dimen.drag_elevation));
-        setWillNotDraw(false);
+
+        prefs = Utilities.getLawnchairPrefs(mLauncher);
     }
 
     /**
      * Initialize {@code #mIconDrawable} if the item can be represented using
-     * an {@link AdaptiveIconDrawable} or {@link FolderAdaptiveIcon}.
+     * an {@link AdaptiveIconCompat} or {@link FolderAdaptiveIcon}.
      */
     @TargetApi(Build.VERSION_CODES.O)
     public void setItemInfo(final ItemInfo info) {
-        if (info.itemType != LauncherSettings.Favorites.ITEM_TYPE_APPLICATION
-                && info.itemType != LauncherSettings.Favorites.ITEM_TYPE_SEARCH_ACTION
-                && info.itemType != LauncherSettings.Favorites.ITEM_TYPE_DEEP_SHORTCUT
-                && info.itemType != LauncherSettings.Favorites.ITEM_TYPE_FOLDER) {
+        if (!(FeatureFlags.LAUNCHER3_SPRING_ICONS && Utilities.ATLEAST_OREO)) {
+            return;
+        }
+        if (info.itemType != LauncherSettings.Favorites.ITEM_TYPE_APPLICATION &&
+                info.itemType != LauncherSettings.Favorites.ITEM_TYPE_DEEP_SHORTCUT &&
+                info.itemType != LauncherSettings.Favorites.ITEM_TYPE_FOLDER) {
+            return;
+        }
+        if (info instanceof FolderInfo && ((FolderInfo) info).usingCustomIcon(mLauncher)) {
             return;
         }
         // Load the adaptive icon on a background thread and add the view in ui thread.
-        MODEL_EXECUTOR.getHandler().postAtFrontOfQueue(() -> {
-            Object[] outObj = new Object[1];
-            int w = mWidth;
-            int h = mHeight;
-            Drawable dr = Utilities.getFullDrawable(mActivity, info, w, h, outObj);
+        final Looper workerLooper = LauncherModel.getWorkerLooper();
+        new Handler(workerLooper).postAtFrontOfQueue(new Runnable() {
+            @Override
+            public void run() {
+                LauncherAppState appState = LauncherAppState.getInstance(mLauncher);
+                Object[] outObj = new Object[1];
+                // TODO: Actually support wiggling for custom folder icons, but with proper sizing
+                final Drawable dr = getFullDrawable(info, appState, outObj);
 
-            if (dr instanceof AdaptiveIconDrawable) {
-                int blurMargin = (int) mActivity.getResources()
-                        .getDimension(R.dimen.blur_size_medium_outline) / 2;
+                if (dr instanceof AdaptiveIconCompat) {
+                    int w = mBitmap.getWidth();
+                    int h = mBitmap.getHeight();
+                    int blurMargin = (int) mLauncher.getResources()
+                            .getDimension(R.dimen.blur_size_medium_outline) / 2;
 
-                Rect bounds = new Rect(0, 0, w, h);
-                bounds.inset(blurMargin, blurMargin);
-                // Badge is applied after icon normalization so the bounds for badge should not
-                // be scaled down due to icon normalization.
-                Rect badgeBounds = new Rect(bounds);
-                mBadge = getBadge(mActivity, info, outObj[0]);
-                mBadge.setBounds(badgeBounds);
+                    Rect bounds = new Rect(0, 0, w, h);
+                    bounds.inset(blurMargin, blurMargin);
+                    // Badge is applied after icon normalization so the bounds for badge should not
+                    // be scaled down due to icon normalization.
+                    Rect badgeBounds = new Rect(bounds);
+                    mBadge = getBadge(info, appState, outObj[0]);
+                    mBadge.setBounds(badgeBounds);
 
-                // Do not draw the background in case of folder as its translucent
-                final boolean shouldDrawBackground = !(dr instanceof FolderAdaptiveIcon);
-
-                try (LauncherIcons li = LauncherIcons.obtain(mActivity)) {
-                    Drawable nDr; // drawable to be normalized
-                    if (shouldDrawBackground) {
-                        nDr = dr;
-                    } else {
-                        // Since we just want the scale, avoid heavy drawing operations
-                        nDr = new CustomAdaptiveIconDrawable(new ColorDrawable(Color.BLACK), null);
-                    }
+                    LauncherIcons li = LauncherIcons.obtain(mLauncher);
                     Utilities.scaleRectAboutCenter(bounds,
-                            li.getNormalizer().getScale(nDr, null, null, null));
-                }
-                AdaptiveIconDrawable adaptiveIcon = (AdaptiveIconDrawable) dr;
+                            li.getNormalizer().getScale(dr, null, null, null));
+                    li.recycle();
+                    AdaptiveIconCompat adaptiveIcon = (AdaptiveIconCompat) dr;
 
-                // Shrink very tiny bit so that the clip path is smaller than the original bitmap
-                // that has anti aliased edges and shadows.
-                Rect shrunkBounds = new Rect(bounds);
-                Utilities.scaleRectAboutCenter(shrunkBounds, 0.98f);
-                adaptiveIcon.setBounds(shrunkBounds);
-                final Path mask = adaptiveIcon.getIconMask();
+                    Rect fgBounds = new Rect(bounds);
+                    Rect bgBounds = new Rect(bounds);
+                    Utilities.scaleRectAboutCenter(bgBounds, 1.1f);
+                    // Shrink very tiny bit so that the clip path is smaller than the original bitmap
+                    // that has anti aliased edges and shadows.
+                    Rect shrunkBounds = new Rect(prefs.getScaleAdaptiveBg() ? bgBounds : fgBounds);
+                    Utilities.scaleRectAboutCenter(shrunkBounds, 0.98f);
+                    adaptiveIcon.setBounds(shrunkBounds);
+                    final Path mask = adaptiveIcon.getIconMask();
 
-                mTranslateX = new SpringFloatValue(DragView.this,
-                        w * AdaptiveIconDrawable.getExtraInsetFraction());
-                mTranslateY = new SpringFloatValue(DragView.this,
-                        h * AdaptiveIconDrawable.getExtraInsetFraction());
+                    mTranslateX = new SpringFloatValue(DragView.this,
+                            w * AdaptiveIconCompat.getExtraInsetFraction());
+                    mTranslateY = new SpringFloatValue(DragView.this,
+                            h * AdaptiveIconCompat.getExtraInsetFraction());
 
-                bounds.inset(
-                        (int) (-bounds.width() * AdaptiveIconDrawable.getExtraInsetFraction()),
-                        (int) (-bounds.height() * AdaptiveIconDrawable.getExtraInsetFraction())
-                );
-                mBgSpringDrawable = adaptiveIcon.getBackground();
-                if (mBgSpringDrawable == null) {
-                    mBgSpringDrawable = new ColorDrawable(Color.TRANSPARENT);
-                }
-                mBgSpringDrawable.setBounds(bounds);
-                mFgSpringDrawable = adaptiveIcon.getForeground();
-                if (mFgSpringDrawable == null) {
-                    mFgSpringDrawable = new ColorDrawable(Color.TRANSPARENT);
-                }
-                mFgSpringDrawable.setBounds(bounds);
-
-                new Handler(Looper.getMainLooper()).post(() -> mOnDragStartCallback.add(() -> {
-                    // TODO: Consider fade-in animation
-                    // Assign the variable on the UI thread to avoid race conditions.
-                    mScaledMaskPath = mask;
-                    // Avoid relayout as we do not care about children affecting layout
-                    removeAllViewsInLayout();
-
-                    if (info.isDisabled()) {
-                        FastBitmapDrawable d = new FastBitmapDrawable((Bitmap) null);
-                        d.setIsDisabled(true);
-                        mBgSpringDrawable.setColorFilter(d.getColorFilter());
-                        mFgSpringDrawable.setColorFilter(d.getColorFilter());
-                        mBadge.setColorFilter(d.getColorFilter());
+                    fgBounds.inset(
+                            (int) (-fgBounds.width() * AdaptiveIconCompat.getExtraInsetFraction()),
+                            (int) (-fgBounds.height() * AdaptiveIconCompat.getExtraInsetFraction())
+                    );
+                    bgBounds.inset(
+                            (int) (-bgBounds.width() * AdaptiveIconCompat.getExtraInsetFraction()),
+                            (int) (-bgBounds.height() * AdaptiveIconCompat.getExtraInsetFraction())
+                    );
+                    mBgSpringDrawable = adaptiveIcon.getBackground();
+                    if (mBgSpringDrawable == null) {
+                        mBgSpringDrawable = new ColorDrawable(Color.TRANSPARENT);
                     }
-                    invalidate();
-                }));
+                    mBgSpringDrawable.setBounds(prefs.getScaleAdaptiveBg() ? bgBounds : fgBounds);
+                    mFgSpringDrawable = adaptiveIcon.getForeground();
+                    if (mFgSpringDrawable == null) {
+                        mFgSpringDrawable = new ColorDrawable(Color.TRANSPARENT);
+                    }
+                    mFgSpringDrawable.setBounds(fgBounds);
+
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            // Assign the variable on the UI thread to avoid race conditions.
+                            mScaledMaskPath = mask;
+
+                            // Do not draw the background in case of folder as its translucent
+                            mDrawBitmap = !(dr instanceof FolderAdaptiveIcon);
+
+                            if (info.isDisabled()) {
+                                FastBitmapDrawable d = new FastBitmapDrawable((Bitmap) null);
+                                d.setIsDisabled(true);
+                                mBaseFilter = (ColorMatrixColorFilter) d.getColorFilter();
+                            }
+                            updateColorFilter();
+                        }
+                    });
+                }
+            }});
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    private void updateColorFilter() {
+        if (mCurrentFilter == null) {
+            mPaint.setColorFilter(null);
+
+            if (mScaledMaskPath != null) {
+                mBgSpringDrawable.setColorFilter(mBaseFilter);
+                mFgSpringDrawable.setColorFilter(mBaseFilter);
+                mBadge.setColorFilter(mBaseFilter);
             }
-        });
+        } else {
+            ColorMatrixColorFilter currentFilter = new ColorMatrixColorFilter(mCurrentFilter);
+            mPaint.setColorFilter(currentFilter);
+
+            if (mScaledMaskPath != null) {
+                if (mBaseFilter != null) {
+                    mBaseFilter.getColorMatrix(sTempMatrix1);
+                    sTempMatrix2.set(mCurrentFilter);
+                    sTempMatrix1.postConcat(sTempMatrix2);
+
+                    currentFilter = new ColorMatrixColorFilter(sTempMatrix1);
+                }
+
+                mBgSpringDrawable.setColorFilter(currentFilter);
+                mFgSpringDrawable.setColorFilter(currentFilter);
+                mBadge.setColorFilter(currentFilter);
+            }
+        }
+
+        invalidate();
     }
 
     /**
-     * Called when pre-drag finishes for an icon
+     * Returns the full drawable for {@param info}.
+     * @param outObj this is set to the internal data associated with {@param info},
+     *               eg {@link LauncherActivityInfo} or {@link ShortcutInfoCompat}.
      */
-    public void onDragStart() {
-        mOnDragStartCallback.executeAllAndDestroy();
+    private Drawable getFullDrawable(ItemInfo info, LauncherAppState appState, Object[] outObj) {
+        IconPackManager.CustomIconEntry customIconEntry = (info instanceof ShortcutInfo) ?
+                ((ShortcutInfo) info).customIconEntry : null;
+        if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION || customIconEntry != null) {
+            LauncherActivityInfo activityInfo = LauncherAppsCompat.getInstance(mLauncher)
+                    .resolveActivity(info.getIntent(), info.user);
+            outObj[0] = activityInfo;
+            return (activityInfo != null) ? appState.getIconCache()
+                    .getFullResIcon(activityInfo, info, false) : null;
+        } else if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_DEEP_SHORTCUT) {
+            if (info instanceof PendingAddShortcutInfo) {
+                ShortcutConfigActivityInfo activityInfo =
+                        ((PendingAddShortcutInfo) info).activityInfo;
+                outObj[0] = activityInfo;
+                return activityInfo.getFullResIcon(appState.getIconCache());
+            }
+            ShortcutKey key = ShortcutKey.fromItemInfo(info);
+            DeepShortcutManager sm = DeepShortcutManager.getInstance(mLauncher);
+            List<ShortcutInfoCompat> si = sm.queryForFullDetails(
+                    key.componentName.getPackageName(), Arrays.asList(key.getId()), key.user);
+            if (si.isEmpty()) {
+                return null;
+            } else {
+                outObj[0] = si.get(0);
+                int iconDpi = appState.getInvariantDeviceProfile().fillResIconDpi;
+                if (iconProvider instanceof LawnchairIconProvider) {
+                    return ((LawnchairIconProvider) iconProvider).getIcon(si.get(0), iconDpi);
+                }
+                return sm.getShortcutIconDrawable(si.get(0), iconDpi);
+            }
+        } else if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_FOLDER) {
+            FolderInfo folderInfo = (FolderInfo) info;
+            if (folderInfo.isCoverMode()) {
+                return getFullDrawable(folderInfo.getCoverInfo(), appState, outObj);
+            }
+
+            FolderAdaptiveIcon icon =  FolderAdaptiveIcon.createFolderAdaptiveIcon(
+                    mLauncher, info.id, new Point(mBitmap.getWidth(), mBitmap.getHeight()));
+            if (icon == null) {
+                return null;
+            }
+            outObj[0] = icon;
+            return icon;
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * For apps icons and shortcut icons that have badges, this method creates a drawable that can
+     * later on be rendered on top of the layers for the badges. For app icons, work profile badges
+     * can only be applied. For deep shortcuts, when dragged from the pop up container, there's no
+     * badge. When dragged from workspace or folder, it may contain app AND/OR work profile badge
+     **/
+
+    @TargetApi(Build.VERSION_CODES.O)
+    private Drawable getBadge(ItemInfo info, LauncherAppState appState, Object obj) {
+        int iconSize = appState.getInvariantDeviceProfile().iconBitmapSize;
+        if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_DEEP_SHORTCUT) {
+            boolean iconBadged = (info instanceof ItemInfoWithIcon)
+                    && (((ItemInfoWithIcon) info).runtimeStatusFlags & FLAG_ICON_BADGED) > 0;
+            if ((info.id == ItemInfo.NO_ID && !iconBadged)
+                    || !(obj instanceof ShortcutInfoCompat)) {
+                // The item is not yet added on home screen.
+                return new FixedSizeEmptyDrawable(iconSize);
+            }
+            ShortcutInfoCompat si = (ShortcutInfoCompat) obj;
+            LauncherIcons li = LauncherIcons.obtain(appState.getContext());
+            Bitmap badge = li.getShortcutInfoBadge(si, appState.getIconCache()).iconBitmap;
+            li.recycle();
+            float badgeSize = mLauncher.getResources().getDimension(R.dimen.profile_badge_size);
+            float insetFraction = (iconSize - badgeSize) / iconSize;
+            return new InsetDrawable(new FastBitmapDrawable(badge),
+                    insetFraction, insetFraction, 0, 0);
+        } else if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_FOLDER) {
+            return obj instanceof FolderAdaptiveIcon ? ((FolderAdaptiveIcon) obj).getBadge() : new FixedSizeEmptyDrawable(iconSize);
+        } else {
+            return mLauncher.getPackageManager()
+                    .getUserBadgedIcon(new FixedSizeEmptyDrawable(iconSize), info.user);
+        }
     }
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        super.onMeasure(makeMeasureSpec(mWidth, EXACTLY), makeMeasureSpec(mHeight, EXACTLY));
+        setMeasuredDimension(mBitmap.getWidth(), mBitmap.getHeight());
+    }
+
+    /** Sets the scale of the view over the normal workspace icon size. */
+    public void setIntrinsicIconScaleFactor(float scale) {
+        mIntrinsicIconScale = scale;
+    }
+
+    public float getIntrinsicIconScaleFactor() {
+        return mIntrinsicIconScale;
+    }
+
+    public int getDragRegionLeft() {
+        return mDragRegion.left;
+    }
+
+    public int getDragRegionTop() {
+        return mDragRegion.top;
     }
 
     public int getDragRegionWidth() {
@@ -330,12 +469,33 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
         return mDragRegion;
     }
 
-    @Override
-    public void draw(Canvas canvas) {
-        super.draw(canvas);
+    public Bitmap getPreviewBitmap() {
+        return mBitmap;
+    }
 
-        // Draw after the content
+    @Override
+    protected void onDraw(Canvas canvas) {
         mHasDrawn = true;
+
+        if (mDrawBitmap) {
+            // Always draw the bitmap to mask anti aliasing due to clipPath
+            boolean crossFade = mCrossFadeProgress > 0 && mCrossFadeBitmap != null;
+            if (crossFade) {
+                int alpha = crossFade ? (int) (255 * (1 - mCrossFadeProgress)) : 255;
+                mPaint.setAlpha(alpha);
+            }
+            canvas.drawBitmap(mBitmap, 0.0f, 0.0f, mPaint);
+            if (crossFade) {
+                mPaint.setAlpha((int) (255 * mCrossFadeProgress));
+                final int saveCount = canvas.save();
+                float sX = (mBitmap.getWidth() * 1.0f) / mCrossFadeBitmap.getWidth();
+                float sY = (mBitmap.getHeight() * 1.0f) / mCrossFadeBitmap.getHeight();
+                canvas.scale(sX, sY);
+                canvas.drawBitmap(mCrossFadeBitmap, 0.0f, 0.0f, mPaint);
+                canvas.restoreToCount(saveCount);
+            }
+        }
+
         if (mScaledMaskPath != null) {
             int cnt = canvas.save();
             canvas.clipPath(mScaledMaskPath);
@@ -347,25 +507,75 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
         }
     }
 
-    public void crossFadeContent(Drawable crossFadeDrawable, int duration) {
-        if (mContent.getParent() == null) {
-            // If the content is already removed, ignore
-            return;
-        }
-        View newContent = getViewFromDrawable(getContext(), crossFadeDrawable);
-        newContent.measure(makeMeasureSpec(mWidth, EXACTLY), makeMeasureSpec(mHeight, EXACTLY));
-        newContent.layout(0, 0, mWidth, mHeight);
-        addViewInLayout(newContent, 0, new LayoutParams(mWidth, mHeight));
+    public void setCrossFadeBitmap(Bitmap crossFadeBitmap) {
+        mCrossFadeBitmap = crossFadeBitmap;
+    }
 
-        AnimatorSet anim = new AnimatorSet();
-        anim.play(ObjectAnimator.ofFloat(newContent, VIEW_ALPHA, 0, 1));
-        anim.play(ObjectAnimator.ofFloat(mContent, VIEW_ALPHA, 0));
-        anim.setDuration(duration).setInterpolator(Interpolators.DEACCEL_1_5);
-        anim.start();
+    public void crossFade(int duration) {
+        ValueAnimator va = LauncherAnimUtils.ofFloat(0f, 1f);
+        va.setDuration(duration);
+        va.setInterpolator(Interpolators.DEACCEL_1_5);
+        va.addUpdateListener(new AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                mCrossFadeProgress = animation.getAnimatedFraction();
+                invalidate();
+            }
+        });
+        va.start();
+    }
+
+    public void setColor(int color) {
+        if (mPaint == null) {
+            mPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        }
+        if (color != 0) {
+            ColorMatrix m1 = new ColorMatrix();
+            m1.setSaturation(0);
+
+            ColorMatrix m2 = new ColorMatrix();
+            Themes.setColorScaleOnMatrix(color, m2);
+            m1.postConcat(m2);
+
+            animateFilterTo(m1.getArray());
+        } else {
+            if (mCurrentFilter == null) {
+                updateColorFilter();
+            } else {
+                animateFilterTo(new ColorMatrix().getArray());
+            }
+        }
+    }
+
+    private void animateFilterTo(float[] targetFilter) {
+        float[] oldFilter = mCurrentFilter == null ? new ColorMatrix().getArray() : mCurrentFilter;
+        mCurrentFilter = Arrays.copyOf(oldFilter, oldFilter.length);
+
+        if (mFilterAnimator != null) {
+            mFilterAnimator.cancel();
+        }
+        mFilterAnimator = ValueAnimator.ofObject(new FloatArrayEvaluator(mCurrentFilter),
+                oldFilter, targetFilter);
+        mFilterAnimator.setDuration(COLOR_CHANGE_DURATION);
+        mFilterAnimator.addUpdateListener(new AnimatorUpdateListener() {
+
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                updateColorFilter();
+            }
+        });
+        mFilterAnimator.start();
     }
 
     public boolean hasDrawn() {
         return mHasDrawn;
+    }
+
+    @Override
+    public void setAlpha(float alpha) {
+        super.setAlpha(alpha);
+        mPaint.setAlpha((int) (255 * alpha));
+        invalidate();
     }
 
     /**
@@ -378,28 +588,25 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
         mDragLayer.addView(this);
 
         // Start the pick-up animation
-        BaseDragLayer.LayoutParams lp = new BaseDragLayer.LayoutParams(mWidth, mHeight);
+        DragLayer.LayoutParams lp = new DragLayer.LayoutParams(0, 0);
+        lp.width = mBitmap.getWidth();
+        lp.height = mBitmap.getHeight();
         lp.customPosition = true;
         setLayoutParams(lp);
-
-        if (mContent != null) {
-            // At the drag start, the source view visibility is set to invisible.
-            mContent.setVisibility(VISIBLE);
-        }
-
         move(touchX, touchY);
         // Post the animation to skip other expensive work happening on the first frame
-        post(mAnim::start);
+        post(new Runnable() {
+            public void run() {
+                mAnim.start();
+            }
+        });
     }
 
     public void cancelAnimation() {
+        mAnimationCancelled = true;
         if (mAnim != null && mAnim.isRunning()) {
             mAnim.cancel();
         }
-    }
-
-    public boolean isAnimationFinished() {
-        return mAnimStarted && !mAnim.isRunning();
     }
 
     /**
@@ -419,11 +626,12 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
         applyTranslation();
     }
 
-    /**
-     * Animate this DragView to the given DragLayer coordinates and then remove it.
-     */
-    public abstract void animateTo(int toTouchX, int toTouchY, Runnable onCompleteRunnable,
-            int duration);
+    public void animateTo(int toTouchX, int toTouchY, Runnable onCompleteRunnable, int duration) {
+        mTempLoc[0] = toTouchX - mRegistrationX;
+        mTempLoc[1] = toTouchY - mRegistrationY;
+        mDragLayer.animateViewIntoPosition(this, mTempLoc, 1f, mScaleOnDrop, mScaleOnDrop,
+                DragLayer.ANIMATION_END_DISAPPEAR, onCompleteRunnable, duration);
+    }
 
     public void animateShift(final int shiftX, final int shiftY) {
         if (mAnim.isStarted()) {
@@ -448,45 +656,6 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
         setTranslationY(mLastTouchY - mRegistrationY + mAnimatedShiftY);
     }
 
-    /**
-     * Detaches {@link #mContent}, if previously attached, from this view.
-     *
-     * <p>In the case of no change in the drop position, sets {@code reattachToPreviousParent} to
-     * {@code true} to attach the {@link #mContent} back to its previous parent.
-     */
-    public void detachContentView(boolean reattachToPreviousParent) {
-        if (mContent != null && mContentViewParent != null && mContentViewInParentViewIndex >= 0) {
-            Picture picture = new Picture();
-            mContent.draw(picture.beginRecording(mWidth, mHeight));
-            picture.endRecording();
-            View view = new View(mActivity);
-            view.setBackground(new PictureDrawable(picture));
-            view.measure(makeMeasureSpec(mWidth, EXACTLY), makeMeasureSpec(mHeight, EXACTLY));
-            view.layout(mContent.getLeft(), mContent.getTop(),
-                    mContent.getRight(), mContent.getBottom());
-            setClipToOutline(mContent.getClipToOutline());
-            setOutlineProvider(mContent.getOutlineProvider());
-            addViewInLayout(view, indexOfChild(mContent), mContent.getLayoutParams(), true);
-
-            removeViewInLayout(mContent);
-            mContent.setVisibility(INVISIBLE);
-            mContent.setLayoutParams(mContentViewLayoutParams);
-            if (reattachToPreviousParent) {
-                mContentViewParent.addView(mContent, mContentViewInParentViewIndex);
-            }
-            mContentViewParent = null;
-            mContentViewInParentViewIndex = -1;
-        }
-    }
-
-    /**
-     * Removes this view from the {@link DragLayer}.
-     *
-     * <p>If the drag content is a {@link #mContent}, this call doesn't reattach the
-     * {@link #mContent} back to its previous parent. To reattach to previous parent, the caller
-     * should call {@link #detachContentView} with {@code reattachToPreviousParent} sets to true
-     * before this call.
-     */
     public void remove() {
         if (getParent() != null) {
             mDragLayer.removeView(DragView.this);
@@ -499,25 +668,6 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
 
     public float getInitialScale() {
         return mInitialScale;
-    }
-
-    @Override
-    public boolean hasOverlappingRendering() {
-        return false;
-    }
-
-    /** Returns the current content view that is rendered in the drag view. */
-    public View getContentView() {
-        return mContent;
-    }
-
-    /**
-     * Returns the previous {@link ViewGroup} parent of the {@link #mContent} before the drag
-     * content is attached to this view.
-     */
-    @Nullable
-    public ViewGroup getContentViewParent() {
-        return mContentViewParent;
     }
 
     private static class SpringFloatValue {
@@ -537,9 +687,9 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
                 };
 
         // Following three values are fine tuned with motion ux designer
-        private static final int STIFFNESS = 4000;
-        private static final float DAMPENING_RATIO = 1f;
-        private static final int PARALLAX_MAX_IN_DP = 8;
+        private final static int STIFFNESS = 4000;
+        private final static float DAMPENING_RATIO = 1f;
+        private final static int PARALLAX_MAX_IN_DP = 8;
 
         private final View mView;
         private final SpringAnimation mSpring;
@@ -554,7 +704,7 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
                     .setSpring(new SpringForce(0)
                             .setDampingRatio(DAMPENING_RATIO)
                             .setStiffness(STIFFNESS));
-            mDelta = Math.min(range, view.getResources().getDisplayMetrics().density * PARALLAX_MAX_IN_DP);
+            mDelta = view.getResources().getDisplayMetrics().density * PARALLAX_MAX_IN_DP;
         }
 
         public void animateToPos(float value) {
@@ -562,24 +712,23 @@ public abstract class DragView<T extends Context & ActivityContext> extends Fram
         }
     }
 
-    private static View getViewFromDrawable(Context context, Drawable drawable) {
-        ImageView iv = new ImageView(context);
-        iv.setImageDrawable(drawable);
-        return iv;
-    }
+    private static class FixedSizeEmptyDrawable extends ColorDrawable {
 
-    /**
-     * Removes any stray DragView from the DragLayer.
-     */
-    public static void removeAllViews(ActivityContext activity) {
-        BaseDragLayer dragLayer = activity.getDragLayer();
-        // Iterate in reverse order. DragView is added later to the dragLayer,
-        // and will be one of the last views.
-        for (int i = dragLayer.getChildCount() - 1; i >= 0; i--) {
-            View child = dragLayer.getChildAt(i);
-            if (child instanceof DragView) {
-                dragLayer.removeView(child);
-            }
+        private final int mSize;
+
+        public FixedSizeEmptyDrawable(int size) {
+            super(Color.TRANSPARENT);
+            mSize = size;
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return mSize;
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return mSize;
         }
     }
 }

@@ -39,5 +39,4 @@ public abstract class AnimationSuccessListener extends AnimatorListenerAdapter {
     }
 
     public abstract void onAnimationSuccess(Animator animator);
-
 }

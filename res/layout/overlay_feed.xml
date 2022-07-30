@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~     Copyright (c) 2017-2019 the Lawnchair team
+  ~     Copyright (c)  2019 oldosfan (would)
+  ~     This file is part of Lawnchair Launcher.
+  ~
+  ~     Lawnchair Launcher is free software: you can redistribute it and/or modify
+  ~     it under the terms of the GNU General Public License as published by
+  ~     the Free Software Foundation, either version 3 of the License, or
+  ~     (at your option) any later version.
+  ~
+  ~     Lawnchair Launcher is distributed in the hope that it will be useful,
+  ~     but WITHOUT ANY WARRANTY; without even the implied warranty of
+  ~     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  ~     GNU General Public License for more details.
+  ~
+  ~     You should have received a copy of the GNU General Public License
+  ~     along with Lawnchair Launcher.  If not, see <https://www.gnu.org/licenses/>.
+  -->
+
+<ch.deletescape.lawnchair.feed.impl.FeedController xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/overlay_feed"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="false">
+    <FrameLayout
+        android:id="@+id/feed_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+        <ch.deletescape.lawnchair.views.SpringRecyclerView
+            android:clipToPadding="false"
+            android:id="@+id/feed_recycler"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+        <FrameLayout
+            android:fitsSystemWindows="false"
+            android:id="@+id/feed_main_frame"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical" />
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/feed_back_to_top"
+            style="@style/Theme.AppCompat"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:theme="@style/Theme.AppCompat"
+            app:fabSize="mini"
+            app:backgroundTint="@color/qsb_background_hotseat_white"
+            android:tint="@color/colorAccent"
+            android:src="@drawable/ic_keyboard_arrow_up_black_24dp"
+            android:layout_gravity="bottom|end"/>
+        <Toolbar
+            android:fitsSystemWindows="false"
+            android:id="@+id/feed_title_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@android:color/transparent">
+            <LinearLayout
+                android:id="@+id/feed_widget_layout"
+                android:layout_marginEnd="16dp"
+                android:orientation="vertical"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+                <com.google.android.material.tabs.TabLayout
+                    android:id="@+id/feed_tabs"
+                    style="@style/Widget.Feed.Tabs"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:theme="@style/SettingsTheme.Base" />
+            </LinearLayout>
+        </Toolbar>
+    </FrameLayout>
+</ch.deletescape.lawnchair.feed.impl.FeedController>

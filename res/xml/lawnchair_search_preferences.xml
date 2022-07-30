@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.preference.PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <ch.deletescape.lawnchair.globalsearch.ui.SearchProviderPreference
+        android:defaultValue="@string/config_default_search_provider"
+        android:key="pref_globalSearchProvider"
+        android:title="@string/pref_global_search_provider" />
+
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_searchbarAppearance"
+        android:title="@string/searchbar_appearance_title">
+
+        <ch.deletescape.lawnchair.preferences.AutoModeSeekbarPreference
+            android:key="pref_searchbarRadius"
+            android:title="@string/pref_search_bar_radius"
+            app:defaultSeekbarValue="-1.0"
+            app:maxValue="24"
+            app:minValue="0.0"
+            app:steps="24"
+            app:summaryFormat="%.0fdp"/>
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_searchbarDock"
+        android:title="@string/dock_pref_title">
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_dockSearchBar"
+            android:title="@string/dock_search_bar"
+            android:defaultValue="true"
+            android:persistent="true" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_dockColoredGoogle"
+            android:title="@string/dock_colored_google"
+            android:dependency="pref_dockSearchBar"
+            android:defaultValue="true"
+            android:persistent="true" />
+
+        <ch.deletescape.lawnchair.colors.preferences.ColorPickerPreference
+            android:key="pref_hotseatQsbColorResolver"
+            android:title="@string/pref_qsb_color"
+            android:dependency="pref_dockSearchBar"
+            app:colorMode="ARGB"
+            app:resolvers="@array/resolvers_hotseat_qsb"/>
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_searchbarDrawer"
+        android:title="@string/app_drawer_pref_title">
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_allAppsSearch"
+            android:title="@string/title_all_apps_search"
+            android:defaultValue="true" />
+
+        <ch.deletescape.lawnchair.preferences.StyledSwitchPreferenceCompat
+            android:key="pref_search_hidden_apps"
+            android:title="@string/title_search_hidden_apps"
+            android:summary="@string/summary_search_hidden_apps"
+            android:defaultValue="false" />
+
+        <ch.deletescape.lawnchair.colors.preferences.ColorPickerPreference
+            android:key="pref_allappsQsbColorResolver"
+            android:title="@string/pref_qsb_color"
+            android:dependency="pref_allAppsSearch"
+            app:colorMode="ARGB"
+            app:resolvers="@array/resolvers_allapps_qsb"/>
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+
+    <ch.deletescape.lawnchair.preferences.StyledPreferenceCategory
+        android:key="prefCat_otherSearchProviders"
+        android:title="@string/pref_category_misc">
+        <ch.deletescape.lawnchair.preferences.ChromiumPackagePreference
+            android:key="pref_chromiumPackageName"
+            android:defaultValue="@string/chromium_default_package"
+            android:title="@string/title_pref_chromium_package_name"
+            android:summary="%s" />
+    </ch.deletescape.lawnchair.preferences.StyledPreferenceCategory>
+</androidx.preference.PreferenceScreen>

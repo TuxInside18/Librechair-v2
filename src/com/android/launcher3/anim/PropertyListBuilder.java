@@ -1,6 +1,5 @@
 package com.android.launcher3.anim;
 
-import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
 import android.view.View;
 
@@ -45,8 +44,7 @@ public class PropertyListBuilder {
         return this;
     }
 
-    public ObjectAnimator build(View view) {
-        return ObjectAnimator.ofPropertyValuesHolder(view,
-                mProperties.toArray(new PropertyValuesHolder[mProperties.size()]));
+    public PropertyValuesHolder[] build() {
+        return mProperties.toArray(new PropertyValuesHolder[mProperties.size()]);
     }
 }

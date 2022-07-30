@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<icons>
-    <icon
-        drawable="@array/grayscale_calendar_icons"
-        package="com.google.android.calendar" />
-    <icon
-        drawable="@array/grayscale_clock_icons"
-        package="com.google.android.deskclock" />
-</icons>

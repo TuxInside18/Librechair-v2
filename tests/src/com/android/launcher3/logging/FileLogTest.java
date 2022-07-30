@@ -1,12 +1,8 @@
 package com.android.launcher3.logging;
 
-import static androidx.test.core.app.ApplicationProvider.getApplicationContext;
-
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
-import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Before;
@@ -18,6 +14,9 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.Calendar;
 
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
 /**
  * Tests for {@link FileLog}
  */
@@ -26,23 +25,23 @@ import java.util.Calendar;
 public class FileLogTest {
 
     private File mTempDir;
+
     @Before
-    public void setUp() {
+    public void setUp() throws Exception {
         int count = 0;
         do {
-            mTempDir = new File(getApplicationContext().getCacheDir(),
+            mTempDir = new File(InstrumentationRegistry.getTargetContext().getCacheDir(),
                     "log-test-" + (count++));
-        } while (!mTempDir.mkdir());
+        } while(!mTempDir.mkdir());
 
         FileLog.setDir(mTempDir);
     }
 
     @After
-    public void tearDown() {
+    public void tearDown() throws Exception {
         // Clear existing logs
-        for (int i = 0; i < FileLog.LOG_DAYS; i++) {
-            new File(mTempDir, "log-" + i).delete();
-        }
+        new File(mTempDir, "log-0").delete();
+        new File(mTempDir, "log-1").delete();
         mTempDir.delete();
     }
 
@@ -53,12 +52,12 @@ public class FileLogTest {
         }
         FileLog.print("Testing", "hoolalala");
         StringWriter writer = new StringWriter();
-        assertTrue(FileLog.flushAll(new PrintWriter(writer)));
+        FileLog.flushAll(new PrintWriter(writer));
         assertTrue(writer.toString().contains("hoolalala"));
 
         FileLog.print("Testing", "abracadabra", new Exception("cat! cat!"));
         writer = new StringWriter();
-        assertTrue(FileLog.flushAll(new PrintWriter(writer)));
+        FileLog.flushAll(new PrintWriter(writer));
         assertTrue(writer.toString().contains("abracadabra"));
         // Exception is also printed
         assertTrue(writer.toString().contains("cat! cat!"));
@@ -74,18 +73,17 @@ public class FileLogTest {
         }
         FileLog.print("Testing", "hoolalala");
         StringWriter writer = new StringWriter();
-        assertTrue(FileLog.flushAll(new PrintWriter(writer)));
+        FileLog.flushAll(new PrintWriter(writer));
         assertTrue(writer.toString().contains("hoolalala"));
 
         Calendar threeDaysAgo = Calendar.getInstance();
         threeDaysAgo.add(Calendar.HOUR, -72);
-        for (int i = 0; i < FileLog.LOG_DAYS; i++) {
-            new File(mTempDir, "log-" + i).setLastModified(threeDaysAgo.getTimeInMillis());
-        }
+        new File(mTempDir, "log-0").setLastModified(threeDaysAgo.getTimeInMillis());
+        new File(mTempDir, "log-1").setLastModified(threeDaysAgo.getTimeInMillis());
 
         FileLog.print("Testing", "abracadabra", new Exception("cat! cat!"));
         writer = new StringWriter();
-        assertTrue(FileLog.flushAll(new PrintWriter(writer)));
+        FileLog.flushAll(new PrintWriter(writer));
         assertTrue(writer.toString().contains("abracadabra"));
         // Exception is also printed
         assertTrue(writer.toString().contains("cat! cat!"));

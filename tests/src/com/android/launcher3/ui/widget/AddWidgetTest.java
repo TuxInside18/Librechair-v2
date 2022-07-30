@@ -15,25 +15,28 @@
  */
 package com.android.launcher3.ui.widget;
 
-import static com.android.launcher3.ui.TaplTestsLauncher3.getAppPackageName;
-
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-
 import androidx.test.filters.LargeTest;
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.uiautomator.By;
+import androidx.test.uiautomator.UiObject2;
+import android.view.View;
 
-import com.android.launcher3.model.data.LauncherAppWidgetInfo;
-import com.android.launcher3.tapl.Widget;
-import com.android.launcher3.tapl.WidgetResizeFrame;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.LauncherAppWidgetInfo;
+import com.android.launcher3.LauncherAppWidgetProviderInfo;
+import com.android.launcher3.Workspace.ItemOperator;
 import com.android.launcher3.ui.AbstractLauncherUiTest;
-import com.android.launcher3.ui.TestViewHelpers;
+import com.android.launcher3.util.Condition;
+import com.android.launcher3.util.Wait;
+import com.android.launcher3.util.rule.LauncherActivityRule;
 import com.android.launcher3.util.rule.ShellCommandRule;
-import com.android.launcher3.widget.LauncherAppWidgetProviderInfo;
+import com.android.launcher3.widget.WidgetCell;
 
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import static org.junit.Assert.assertTrue;
 
 /**
  * Test to add widget from widget tray
@@ -42,53 +45,43 @@ import org.junit.runner.RunWith;
 @RunWith(AndroidJUnit4.class)
 public class AddWidgetTest extends AbstractLauncherUiTest {
 
-    @Rule
-    public ShellCommandRule mGrantWidgetRule = ShellCommandRule.grantWidgetBind();
+    @Rule public LauncherActivityRule mActivityMonitor = new LauncherActivityRule();
+    @Rule public ShellCommandRule mGrantWidgetRule = ShellCommandRule.grandWidgetBind();
 
     @Test
-    @PortraitLandscape
-    public void testDragIcon() throws Throwable {
-        clearHomescreen();
-        mDevice.pressHome();
-
-        final LauncherAppWidgetProviderInfo widgetInfo =
-                TestViewHelpers.findWidgetProvider(this, false /* hasConfigureScreen */);
-
-        WidgetResizeFrame resizeFrame = mLauncher.
-                getWorkspace().
-                openAllWidgets().
-                getWidget(widgetInfo.getLabel(mTargetContext.getPackageManager())).
-                dragWidgetToWorkspace();
-
-        assertTrue(mActivityMonitor.itemExists(
-                (info, view) -> info instanceof LauncherAppWidgetInfo &&
-                        ((LauncherAppWidgetInfo) info).providerName.getClassName().equals(
-                                widgetInfo.provider.getClassName())).call());
-
-        assertNotNull("Widget resize frame not shown after widget add", resizeFrame);
-        resizeFrame.dismiss();
-
-        final Widget widget = mLauncher.getWorkspace().tryGetWidget(widgetInfo.label,
-                DEFAULT_UI_TIMEOUT);
-        assertNotNull("Widget not found on the workspace", widget);
-        widget.launch(getAppPackageName());
+    public void testDragIcon_portrait() throws Throwable {
+        lockRotation(true);
+        performTest();
     }
 
-    /**
-     * Test dragging a custom shortcut to the workspace and launch it.
-     *
-     * A custom shortcut is a 1x1 widget that launches a specific intent when user tap on it.
-     * Custom shortcuts are replaced by deep shortcuts after api 25.
-     */
     @Test
-    @PortraitLandscape
-    public void testDragCustomShortcut() throws Throwable {
+    public void testDragIcon_landscape() throws Throwable {
+        lockRotation(false);
+        performTest();
+    }
+
+    private void performTest() throws Throwable {
         clearHomescreen();
-        mDevice.pressHome();
-        mLauncher.getWorkspace().openAllWidgets()
-                .getWidget("com.android.launcher3.testcomponent.CustomShortcutConfigActivity")
-                .dragToWorkspace(false, true);
-        mLauncher.getWorkspace().getWorkspaceAppIcon("Shortcut")
-                .launch(getAppPackageName());
+        mActivityMonitor.startLauncher();
+
+        final LauncherAppWidgetProviderInfo widgetInfo =
+                findWidgetProvider(false /* hasConfigureScreen */);
+
+        // Open widget tray and wait for load complete.
+        final UiObject2 widgetContainer = openWidgetsTray();
+        assertTrue(Wait.atMost(Condition.minChildCount(widgetContainer, 2), DEFAULT_UI_TIMEOUT));
+
+        // Drag widget to homescreen
+        UiObject2 widget = scrollAndFind(widgetContainer, By.clazz(WidgetCell.class)
+                .hasDescendant(By.text(widgetInfo.getLabel(mTargetContext.getPackageManager()))));
+        dragToWorkspace(widget, false);
+
+        assertTrue(mActivityMonitor.itemExists(new ItemOperator() {
+            @Override
+            public boolean evaluate(ItemInfo info, View view) {
+                return info instanceof LauncherAppWidgetInfo &&
+                        ((LauncherAppWidgetInfo) info).providerName.equals(widgetInfo.provider);
+            }
+        }).call());
     }
 }

@@ -16,23 +16,30 @@
 
 package com.android.launcher3.tapl;
 
-import static com.android.launcher3.testing.TestProtocol.OVERVIEW_STATE_ORDINAL;
-
 import android.graphics.Point;
-
 import androidx.annotation.NonNull;
 import androidx.test.uiautomator.UiObject2;
 
-import com.android.launcher3.testing.TestProtocol;
-
 /**
  * Operations on AllApps opened from Overview.
+ * Scroll gestures that are OK for {@link AllAppsFromHome} may close it, so they are not supported.
  */
-public final class AllAppsFromOverview extends AllApps {
+public final class AllAppsFromOverview {
+    private final Launcher mLauncher;
 
-    AllAppsFromOverview(LauncherInstrumentation launcher) {
-        super(launcher);
-        verifyActiveContainer();
+    AllAppsFromOverview(Launcher launcher) {
+        mLauncher = launcher;
+        assertState();
+    }
+
+    /**
+     * Asserts that we are in all apps.
+     *
+     * @return All apps container.
+     */
+    @NonNull
+    private UiObject2 assertState() {
+        return mLauncher.assertState(Launcher.State.ALL_APPS);
     }
 
     /**
@@ -42,26 +49,15 @@ public final class AllAppsFromOverview extends AllApps {
      */
     @NonNull
     public Overview switchBackToOverview() {
-        try (LauncherInstrumentation.Closable e = mLauncher.eventsCheck();
-             LauncherInstrumentation.Closable c = mLauncher.addContextLayer(
-                     "want to switch back from all apps to overview")) {
-            final UiObject2 allAppsContainer = verifyActiveContainer();
-            // Swipe from the search box to the bottom.
-            final UiObject2 qsb = mLauncher.waitForObjectInContainer(
-                    allAppsContainer, "search_container_all_apps");
-            final Point start = qsb.getVisibleCenter();
-            final int swipeHeight = mLauncher.getTestInfo(
-                    TestProtocol.REQUEST_ALL_APPS_TO_OVERVIEW_SWIPE_HEIGHT).
-                    getInt(TestProtocol.TEST_INFO_RESPONSE_FIELD);
+        final UiObject2 allAppsContainer = assertState();
+        // Swipe from the search box to the bottom.
+        final UiObject2 qsb = mLauncher.waitForObjectInContainer(
+                allAppsContainer, "search_container_all_apps");
+        final Point start = qsb.getVisibleCenter();
+        final int endY = (int) (mLauncher.getDevice().getDisplayHeight() * 0.6);
+        mLauncher.swipe(start.x, start.y, start.x, endY, (endY - start.y) / 100);  // 100 px/step
 
-            final int endY = start.y + swipeHeight;
-            LauncherInstrumentation.log("AllAppsFromOverview.switchBackToOverview before swipe");
-            mLauncher.swipeToState(start.x, start.y, start.x, endY, 60, OVERVIEW_STATE_ORDINAL,
-                    LauncherInstrumentation.GestureScope.INSIDE);
-
-            try (LauncherInstrumentation.Closable c1 = mLauncher.addContextLayer("swiped down")) {
-                return new Overview(mLauncher);
-            }
-        }
+        return new Overview(mLauncher);
     }
+
 }

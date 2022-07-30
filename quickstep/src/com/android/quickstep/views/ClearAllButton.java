@@ -18,85 +18,34 @@ package com.android.quickstep.views;
 
 import android.content.Context;
 import android.util.AttributeSet;
-import android.util.FloatProperty;
+
 import android.widget.Button;
+import ch.deletescape.lawnchair.font.CustomFontManager;
+import com.android.launcher3.Utilities;
+import com.android.quickstep.views.RecentsView.PageCallbacks;
+import com.android.quickstep.views.RecentsView.ScrollState;
 
-import com.android.launcher3.DeviceProfile;
-import com.android.launcher3.statemanager.StatefulActivity;
-import com.android.launcher3.touch.PagedOrientationHandler;
+public class ClearAllButton extends Button implements PageCallbacks {
 
-import app.lawnchair.font.FontManager;
-import app.lawnchair.theme.drawable.DrawableTokens;
-
-public class ClearAllButton extends Button {
-
-    public static final FloatProperty<ClearAllButton> VISIBILITY_ALPHA =
-            new FloatProperty<ClearAllButton>("visibilityAlpha") {
-                @Override
-                public Float get(ClearAllButton view) {
-                    return view.mVisibilityAlpha;
-                }
-
-                @Override
-                public void setValue(ClearAllButton view, float v) {
-                    view.setVisibilityAlpha(v);
-                }
-            };
-
-    public static final FloatProperty<ClearAllButton> DISMISS_ALPHA =
-            new FloatProperty<ClearAllButton>("dismissAlpha") {
-                @Override
-                public Float get(ClearAllButton view) {
-                    return view.mDismissAlpha;
-                }
-
-                @Override
-                public void setValue(ClearAllButton view, float v) {
-                    view.setDismissAlpha(v);
-                }
-            };
-
-    private final StatefulActivity mActivity;
     private float mScrollAlpha = 1;
     private float mContentAlpha = 1;
-    private float mVisibilityAlpha = 1;
-    private float mDismissAlpha = 1;
-    private float mFullscreenProgress = 1;
-    private float mGridProgress = 1;
 
-    private boolean mIsRtl;
-    private float mNormalTranslationPrimary;
-    private float mFullscreenTranslationPrimary;
-    private float mGridTranslationPrimary;
-    private float mGridScrollOffset;
-    private float mScrollOffsetPrimary;
-    private float mSplitSelectScrollOffsetPrimary;
+    private final boolean mIsRtl;
 
-    private int mSidePadding;
+    private int mScrollOffset;
 
     public ClearAllButton(Context context, AttributeSet attrs) {
         super(context, attrs);
-        mIsRtl = getLayoutDirection() == LAYOUT_DIRECTION_RTL;
-        mActivity = StatefulActivity.fromContext(context);
-        FontManager.INSTANCE.get(context).overrideFont(this, attrs);
-        setBackground(DrawableTokens.BgOverviewClearAllButton.resolve(context));
+        mIsRtl = Utilities.isRtl(context.getResources());
+        CustomFontManager.Companion.getInstance(context).loadCustomFont(this, attrs);
     }
 
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
-        PagedOrientationHandler orientationHandler = getRecentsView().getPagedOrientationHandler();
-        mSidePadding = orientationHandler.getClearAllSidePadding(getRecentsView(), mIsRtl);
-    }
 
-    private RecentsView getRecentsView() {
-        return (RecentsView) getParent();
-    }
-
-    @Override
-    public void onRtlPropertiesChanged(int layoutDirection) {
-        super.onRtlPropertiesChanged(layoutDirection);
-        mIsRtl = getLayoutDirection() == LAYOUT_DIRECTION_RTL;
+        RecentsView parent = (RecentsView) getParent();
+        mScrollOffset = mIsRtl ? parent.getPaddingRight() / 2 : - parent.getPaddingLeft() / 2;
     }
 
     @Override
@@ -111,149 +60,22 @@ public class ClearAllButton extends Button {
         }
     }
 
-    public void setVisibilityAlpha(float alpha) {
-        if (mVisibilityAlpha != alpha) {
-            mVisibilityAlpha = alpha;
-            updateAlpha();
-        }
-    }
-
-    public void setDismissAlpha(float alpha) {
-        if (mDismissAlpha != alpha) {
-            mDismissAlpha = alpha;
-            updateAlpha();
-        }
-    }
-
-    public void onRecentsViewScroll(int scroll, boolean gridEnabled) {
-        RecentsView recentsView = getRecentsView();
-        if (recentsView == null) {
+    @Override
+    public void onPageScroll(ScrollState scrollState) {
+        float width = getWidth();
+        if (width == 0) {
             return;
         }
 
-        PagedOrientationHandler orientationHandler = recentsView.getPagedOrientationHandler();
-        float orientationSize = orientationHandler.getPrimaryValue(getWidth(), getHeight());
-        if (orientationSize == 0) {
-            return;
-        }
-
-        int clearAllScroll = recentsView.getClearAllScroll();
-        int adjustedScrollFromEdge = Math.abs(scroll - clearAllScroll);
-        float shift = Math.min(adjustedScrollFromEdge, orientationSize);
-        mNormalTranslationPrimary = mIsRtl ? -shift : shift;
-        if (!gridEnabled) {
-            mNormalTranslationPrimary += mSidePadding;
-        }
-        applyPrimaryTranslation();
-        applySecondaryTranslation();
-        mScrollAlpha = 1 - shift / orientationSize;
+        float shift = Math.min(scrollState.scrollFromEdge, width);
+        setTranslationX(mIsRtl ? (mScrollOffset - shift) : (mScrollOffset + shift));
+        mScrollAlpha = 1 - shift / width;
         updateAlpha();
     }
 
     private void updateAlpha() {
-        final float alpha = mScrollAlpha * mContentAlpha * mVisibilityAlpha * mDismissAlpha;
+        final float alpha = mScrollAlpha * mContentAlpha;
         setAlpha(alpha);
-        setClickable(Math.min(alpha, 1) == 1);
-    }
-
-    public void setFullscreenTranslationPrimary(float fullscreenTranslationPrimary) {
-        mFullscreenTranslationPrimary = fullscreenTranslationPrimary;
-        applyPrimaryTranslation();
-    }
-
-    public void setGridTranslationPrimary(float gridTranslationPrimary) {
-        mGridTranslationPrimary = gridTranslationPrimary;
-        applyPrimaryTranslation();
-    }
-
-    public void setGridScrollOffset(float gridScrollOffset) {
-        mGridScrollOffset = gridScrollOffset;
-    }
-
-    public void setScrollOffsetPrimary(float scrollOffsetPrimary) {
-        mScrollOffsetPrimary = scrollOffsetPrimary;
-    }
-
-    public void setSplitSelectScrollOffsetPrimary(float splitSelectScrollOffsetPrimary) {
-        mSplitSelectScrollOffsetPrimary = splitSelectScrollOffsetPrimary;
-    }
-
-    public float getScrollAdjustment(boolean fullscreenEnabled, boolean gridEnabled) {
-        float scrollAdjustment = 0;
-        if (fullscreenEnabled) {
-            scrollAdjustment += mFullscreenTranslationPrimary;
-        }
-        if (gridEnabled) {
-            scrollAdjustment += mGridTranslationPrimary + mGridScrollOffset;
-        }
-        scrollAdjustment += mScrollOffsetPrimary;
-        scrollAdjustment += mSplitSelectScrollOffsetPrimary;
-        return scrollAdjustment;
-    }
-
-    public float getOffsetAdjustment(boolean fullscreenEnabled, boolean gridEnabled) {
-        return getScrollAdjustment(fullscreenEnabled, gridEnabled);
-    }
-
-    /**
-     * Adjust translation when this TaskView is about to be shown fullscreen.
-     *
-     * @param progress: 0 = no translation; 1 = translate according to TaskVIew translations.
-     */
-    public void setFullscreenProgress(float progress) {
-        mFullscreenProgress = progress;
-        applyPrimaryTranslation();
-    }
-
-    /**
-     * Moves ClearAllButton between carousel and 2 row grid.
-     *
-     * @param gridProgress 0 = carousel; 1 = 2 row grid.
-     */
-    public void setGridProgress(float gridProgress) {
-        mGridProgress = gridProgress;
-        applyPrimaryTranslation();
-    }
-
-    private void applyPrimaryTranslation() {
-        RecentsView recentsView = getRecentsView();
-        if (recentsView == null) {
-            return;
-        }
-
-        PagedOrientationHandler orientationHandler = recentsView.getPagedOrientationHandler();
-        orientationHandler.getPrimaryViewTranslate().set(this,
-                orientationHandler.getPrimaryValue(0f, getOriginalTranslationY())
-                        + mNormalTranslationPrimary + getFullscreenTrans(
-                        mFullscreenTranslationPrimary) + getGridTrans(mGridTranslationPrimary));
-    }
-
-    private void applySecondaryTranslation() {
-        RecentsView recentsView = getRecentsView();
-        if (recentsView == null) {
-            return;
-        }
-
-        PagedOrientationHandler orientationHandler = recentsView.getPagedOrientationHandler();
-        orientationHandler.getSecondaryViewTranslate().set(this,
-                orientationHandler.getSecondaryValue(0f, getOriginalTranslationY()));
-    }
-
-    private float getFullscreenTrans(float endTranslation) {
-        return mFullscreenProgress > 0 ? endTranslation : 0;
-    }
-
-    private float getGridTrans(float endTranslation) {
-        return mGridProgress > 0 ? endTranslation : 0;
-    }
-
-    /**
-     * Get the Y translation that is set in the original layout position, before scrolling.
-     */
-    private float getOriginalTranslationY() {
-        DeviceProfile deviceProfile = mActivity.getDeviceProfile();
-        return deviceProfile.overviewShowAsGrid
-                ? deviceProfile.overviewRowSpacing
-                : deviceProfile.overviewTaskThumbnailTopMarginPx / 2.0f;
+        setClickable(alpha == 1);
     }
 }

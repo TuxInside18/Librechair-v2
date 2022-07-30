@@ -15,32 +15,62 @@
  */
 package com.android.quickstep;
 
-import static com.android.launcher3.util.Executors.MAIN_EXECUTOR;
-import static com.android.quickstep.util.ActiveGestureLog.INTENT_EXTRA_LOG_TRACE_ID;
+import static android.content.Intent.ACTION_PACKAGE_ADDED;
+import static android.content.Intent.ACTION_PACKAGE_CHANGED;
+import static android.content.Intent.ACTION_PACKAGE_REMOVED;
 
+import static com.android.launcher3.anim.Interpolators.FAST_OUT_SLOW_IN;
+import static com.android.launcher3.anim.Interpolators.TOUCH_RESPONSE_INTERPOLATOR;
+import static com.android.quickstep.TouchConsumer.INTERACTION_NORMAL;
+import static com.android.systemui.shared.system.ActivityManagerWrapper
+        .CLOSE_SYSTEM_WINDOWS_REASON_RECENTS;
+import static com.android.systemui.shared.system.PackageManagerWrapper
+        .ACTION_PREFERRED_ACTIVITY_CHANGED;
+import static com.android.systemui.shared.system.RemoteAnimationTargetCompat.MODE_CLOSING;
+import static com.android.systemui.shared.system.RemoteAnimationTargetCompat.MODE_OPENING;
+
+import android.animation.Animator;
+import android.animation.AnimatorSet;
+import android.animation.ValueAnimator;
 import android.annotation.TargetApi;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
-import android.graphics.PointF;
+import android.content.IntentFilter;
+import android.content.pm.ResolveInfo;
+import android.graphics.Rect;
 import android.os.Build;
+import android.os.PatternMatcher;
 import android.os.SystemClock;
-import android.os.Trace;
+import android.util.Log;
+import android.view.View;
+import android.view.ViewConfiguration;
 
-import androidx.annotation.BinderThread;
-import androidx.annotation.Nullable;
-import androidx.annotation.UiThread;
-
-import com.android.launcher3.statemanager.StatefulActivity;
-import com.android.launcher3.util.RunnableList;
-import com.android.quickstep.RecentsAnimationCallbacks.RecentsAnimationListener;
-import com.android.quickstep.util.LauncherSplitScreenListener;
+import com.android.launcher3.AbstractFloatingView;
+import com.android.launcher3.BaseDraggingActivity;
+import com.android.launcher3.InvariantDeviceProfile;
+import com.android.launcher3.MainThreadExecutor;
+import com.android.launcher3.anim.AnimationSuccessListener;
+import com.android.launcher3.logging.UserEventDispatcher;
+import com.android.launcher3.userevent.nano.LauncherLogProto.Action;
+import com.android.launcher3.userevent.nano.LauncherLogProto.ContainerType;
+import com.android.quickstep.ActivityControlHelper.ActivityInitListener;
+import com.android.quickstep.ActivityControlHelper.AnimationFactory;
+import com.android.quickstep.ActivityControlHelper.FallbackActivityControllerHelper;
+import com.android.quickstep.ActivityControlHelper.LauncherActivityControllerHelper;
+import com.android.quickstep.util.ClipAnimationHelper;
+import com.android.quickstep.util.TransformedRect;
+import com.android.quickstep.util.RemoteAnimationTargetSet;
 import com.android.quickstep.views.RecentsView;
-import com.android.quickstep.views.TaskView;
-import com.android.systemui.shared.recents.model.ThumbnailData;
-import com.android.systemui.shared.system.InteractionJankMonitorWrapper;
+import com.android.systemui.shared.system.ActivityManagerWrapper;
+import com.android.systemui.shared.system.LatencyTrackerCompat;
+import com.android.systemui.shared.system.PackageManagerWrapper;
+import com.android.systemui.shared.system.RemoteAnimationTargetCompat;
+import com.android.systemui.shared.system.SyncRtSurfaceTransactionApplier;
+import com.android.systemui.shared.system.TransactionCompat;
 
-import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.HashMap;
 
 /**
  * Helper class to handle various atomic commands for switching between Overview.
@@ -48,251 +78,303 @@ import java.util.HashMap;
 @TargetApi(Build.VERSION_CODES.P)
 public class OverviewCommandHelper {
 
-    public static final int TYPE_SHOW = 1;
-    public static final int TYPE_SHOW_NEXT_FOCUS = 2;
-    public static final int TYPE_HIDE = 3;
-    public static final int TYPE_TOGGLE = 4;
-    public static final int TYPE_HOME = 5;
+    private static final long RECENTS_LAUNCH_DURATION = 250;
 
-    private static final String TRANSITION_NAME = "Transition:toOverview";
+    private static final String TAG = "OverviewCommandHelper";
 
-    private final TouchInteractionService mService;
-    private final OverviewComponentObserver mOverviewComponentObserver;
-    private final TaskAnimationManager mTaskAnimationManager;
-    private final ArrayList<CommandInfo> mPendingCommands = new ArrayList<>();
+    private final Context mContext;
+    private final ActivityManagerWrapper mAM;
+    private final RecentsModel mRecentsModel;
+    private final MainThreadExecutor mMainThreadExecutor;
+    private final ComponentName mMyHomeComponent;
 
-    public OverviewCommandHelper(TouchInteractionService service,
-            OverviewComponentObserver observer,
-            TaskAnimationManager taskAnimationManager) {
-        mService = service;
-        mOverviewComponentObserver = observer;
-        mTaskAnimationManager = taskAnimationManager;
+    private final BroadcastReceiver mUserPreferenceChangeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            initOverviewTargets();
+        }
+    };
+    private final BroadcastReceiver mOtherHomeAppUpdateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            initOverviewTargets();
+        }
+    };
+    private String mUpdateRegisteredPackage;
+
+    public Intent overviewIntent;
+    public ComponentName overviewComponent;
+    private ActivityControlHelper mActivityControlHelper;
+
+    private long mLastToggleTime;
+
+    public OverviewCommandHelper(Context context) {
+        mContext = context;
+        mAM = ActivityManagerWrapper.getInstance();
+        mMainThreadExecutor = new MainThreadExecutor();
+        mRecentsModel = RecentsModel.getInstance(mContext);
+
+        Intent myHomeIntent = new Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .setPackage(mContext.getPackageName());
+        ResolveInfo info = context.getPackageManager().resolveActivity(myHomeIntent, 0);
+        mMyHomeComponent = new ComponentName(context.getPackageName(), info.activityInfo.name);
+
+        mContext.registerReceiver(mUserPreferenceChangeReceiver,
+                new IntentFilter(ACTION_PREFERRED_ACTIVITY_CHANGED));
+        initOverviewTargets();
     }
 
-    /**
-     * Called when the command finishes execution.
-     */
-    private void scheduleNextTask(CommandInfo command) {
-        if (!mPendingCommands.isEmpty() && mPendingCommands.get(0) == command) {
-            mPendingCommands.remove(0);
-            executeNext();
+    private void initOverviewTargets() {
+        ComponentName defaultHome = PackageManagerWrapper.getInstance()
+                .getHomeActivities(new ArrayList<>());
+
+        final String overviewIntentCategory;
+        if (defaultHome == null || mMyHomeComponent.equals(defaultHome)) {
+            // User default home is same as out home app. Use Overview integrated in Launcher.
+            overviewComponent = mMyHomeComponent;
+            mActivityControlHelper = new LauncherActivityControllerHelper();
+            overviewIntentCategory = Intent.CATEGORY_HOME;
+
+            if (mUpdateRegisteredPackage != null) {
+                // Remove any update listener as we don't care about other packages.
+                mContext.unregisterReceiver(mOtherHomeAppUpdateReceiver);
+                mUpdateRegisteredPackage = null;
+            }
+        } else {
+            // The default home app is a different launcher. Use the fallback Overview instead.
+            overviewComponent = new ComponentName(mContext, RecentsActivity.class);
+            mActivityControlHelper = new FallbackActivityControllerHelper(defaultHome);
+            overviewIntentCategory = Intent.CATEGORY_DEFAULT;
+
+            // User's default home app can change as a result of package updates of this app (such
+            // as uninstalling the app or removing the "Launcher" feature in an update).
+            // Listen for package updates of this app (and remove any previously attached
+            // package listener).
+            if (!defaultHome.getPackageName().equals(mUpdateRegisteredPackage)) {
+                if (mUpdateRegisteredPackage != null) {
+                    mContext.unregisterReceiver(mOtherHomeAppUpdateReceiver);
+                }
+
+                mUpdateRegisteredPackage = defaultHome.getPackageName();
+                IntentFilter updateReceiver = new IntentFilter(ACTION_PACKAGE_ADDED);
+                updateReceiver.addAction(ACTION_PACKAGE_CHANGED);
+                updateReceiver.addAction(ACTION_PACKAGE_REMOVED);
+                updateReceiver.addDataScheme("package");
+                updateReceiver.addDataSchemeSpecificPart(mUpdateRegisteredPackage,
+                        PatternMatcher.PATTERN_LITERAL);
+                mContext.registerReceiver(mOtherHomeAppUpdateReceiver, updateReceiver);
+            }
+        }
+
+        overviewIntent = new Intent(Intent.ACTION_MAIN)
+                .addCategory(overviewIntentCategory)
+                .setComponent(overviewComponent)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+
+    public void onDestroy() {
+        mContext.unregisterReceiver(mUserPreferenceChangeReceiver);
+
+        if (mUpdateRegisteredPackage != null) {
+            mContext.unregisterReceiver(mOtherHomeAppUpdateReceiver);
+            mUpdateRegisteredPackage = null;
         }
     }
 
-    /**
-     * Executes the next command from the queue. If the command finishes immediately (returns true),
-     * it continues to execute the next command, until the queue is empty of a command defer's its
-     * completion (returns false).
-     */
-    @UiThread
-    private void executeNext() {
-        if (mPendingCommands.isEmpty()) {
+    public void onOverviewToggle() {
+        // If currently screen pinning, do not enter overview
+        if (mAM.isScreenPinningActive()) {
             return;
         }
-        CommandInfo cmd = mPendingCommands.get(0);
-        if (executeCommand(cmd)) {
-            scheduleNextTask(cmd);
-        }
+
+        mAM.closeSystemWindows(CLOSE_SYSTEM_WINDOWS_REASON_RECENTS);
+        mMainThreadExecutor.execute(new RecentsActivityCommand<>());
     }
 
-    @UiThread
-    private void addCommand(CommandInfo cmd) {
-        boolean wasEmpty = mPendingCommands.isEmpty();
-        mPendingCommands.add(cmd);
-        if (wasEmpty) {
-            executeNext();
-        }
+    public void onOverviewShown() {
+        mMainThreadExecutor.execute(new ShowRecentsCommand());
     }
 
-    /**
-     * Adds a command to be executed next, after all pending tasks are completed
-     */
-    @BinderThread
-    public void addCommand(int type) {
-        CommandInfo cmd = new CommandInfo(type);
-        MAIN_EXECUTOR.execute(() -> addCommand(cmd));
-    }
-
-    @UiThread
-    public void clearPendingCommands() {
-        mPendingCommands.clear();
-    }
-
-    @Nullable
-    private TaskView getNextTask(RecentsView view) {
-        final TaskView runningTaskView = view.getRunningTaskView();
-
-        if (runningTaskView == null) {
-            return view.getTaskViewAt(0);
-        } else {
-            final TaskView nextTask = view.getNextTaskView();
-            return nextTask != null ? nextTask : runningTaskView;
-        }
-    }
-
-    private boolean launchTask(RecentsView recents, @Nullable TaskView taskView, CommandInfo cmd) {
-        RunnableList callbackList = null;
-        if (taskView != null) {
-            taskView.setEndQuickswitchCuj(true);
-            callbackList = taskView.launchTaskAnimated();
-        }
-
-        if (callbackList != null) {
-            callbackList.add(() -> scheduleNextTask(cmd));
-            return false;
-        } else {
-            recents.startHome();
-            return true;
-        }
-    }
-
-    /**
-     * Executes the task and returns true if next task can be executed. If false, then the next
-     * task is deferred until {@link #scheduleNextTask} is called
-     */
-    private <T extends StatefulActivity<?>> boolean executeCommand(CommandInfo cmd) {
-        BaseActivityInterface<?, T> activityInterface =
-                mOverviewComponentObserver.getActivityInterface();
-        RecentsView recents = activityInterface.getVisibleRecentsView();
-        if (recents == null) {
-            if (cmd.type == TYPE_HIDE) {
-                // already hidden
-                return true;
+    public void onTip(int actionType, int viewType) {
+        mMainThreadExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                UserEventDispatcher.newInstance(mContext,
+                        new InvariantDeviceProfile(mContext).getDeviceProfile(mContext))
+                        .logActionTip(actionType, viewType);
             }
-            if (cmd.type == TYPE_HOME) {
-                mService.startActivity(mOverviewComponentObserver.getHomeIntent());
-                LauncherSplitScreenListener.INSTANCE.getNoCreate().notifySwipingToHome();
-                return true;
-            }
-        } else {
-            switch (cmd.type) {
-                case TYPE_SHOW:
-                    // already visible
-                    return true;
-                case TYPE_HIDE: {
-                    int currentPage = recents.getNextPage();
-                    TaskView tv = (currentPage >= 0 && currentPage < recents.getTaskViewCount())
-                            ? (TaskView) recents.getPageAt(currentPage)
-                            : null;
-                    return launchTask(recents, tv, cmd);
+        });
+    }
+
+    public ActivityControlHelper getActivityControlHelper() {
+        return mActivityControlHelper;
+    }
+
+    private class ShowRecentsCommand extends RecentsActivityCommand {
+
+        @Override
+        protected boolean handleCommand(long elapsedTime) {
+            return mHelper.getVisibleRecentsView() != null;
+        }
+    }
+
+    private class RecentsActivityCommand<T extends BaseDraggingActivity> implements Runnable {
+
+        protected final ActivityControlHelper<T> mHelper;
+        private final long mCreateTime;
+        private final int mRunningTaskId;
+
+        private ActivityInitListener mListener;
+        private T mActivity;
+        private RecentsView mRecentsView;
+        private final long mToggleClickedTime = SystemClock.uptimeMillis();
+        private boolean mUserEventLogged;
+
+        public RecentsActivityCommand() {
+            mHelper = getActivityControlHelper();
+            mCreateTime = SystemClock.elapsedRealtime();
+            mRunningTaskId = mAM.getRunningTask().id;
+
+            // Preload the plan
+            mRecentsModel.loadTasks(mRunningTaskId, null);
+        }
+
+        @Override
+        public void run() {
+            long elapsedTime = mCreateTime - mLastToggleTime;
+            mLastToggleTime = mCreateTime;
+
+            if (!handleCommand(elapsedTime)) {
+                // Start overview
+                if (!mHelper.switchToRecentsIfVisible(true)) {
+                    mListener = mHelper.createActivityInitListener(this::onActivityReady);
+                    mListener.registerAndStartActivity(overviewIntent, this::createWindowAnimation,
+                            mContext, mMainThreadExecutor.getHandler(), RECENTS_LAUNCH_DURATION);
                 }
-                case TYPE_TOGGLE:
-                    return launchTask(recents, getNextTask(recents), cmd);
-                case TYPE_HOME:
-                    recents.startHome();
-                    LauncherSplitScreenListener.INSTANCE.getNoCreate().notifySwipingToHome();
-                    return true;
             }
         }
 
-        if (activityInterface.switchToRecentsIfVisible(() -> scheduleNextTask(cmd))) {
-            // If successfully switched, wait until animation finishes
+        protected boolean handleCommand(long elapsedTime) {
+            // TODO: We need to fix this case with PIP, when an activity first enters PIP, it shows
+            //       the menu activity which takes window focus, preventing the right condition from
+            //       being run below
+            RecentsView recents = mHelper.getVisibleRecentsView();
+            if (recents != null) {
+                // Launch the next task
+                recents.showNextTask();
+                return true;
+            } else if (elapsedTime < ViewConfiguration.getDoubleTapTimeout()) {
+                // The user tried to launch back into overview too quickly, either after
+                // launching an app, or before overview has actually shown, just ignore for now
+                return true;
+            }
             return false;
         }
 
-        final T activity = activityInterface.getCreatedActivity();
-        if (activity != null) {
-            InteractionJankMonitorWrapper.begin(
-                    activity.getRootView(),
-                    InteractionJankMonitorWrapper.CUJ_QUICK_SWITCH);
+        private boolean onActivityReady(T activity, Boolean wasVisible) {
+            activity.<RecentsView>getOverviewPanel().setCurrentTask(mRunningTaskId);
+            AbstractFloatingView.closeAllOpenViews(activity, wasVisible);
+            AnimationFactory factory = mHelper.prepareRecentsUI(activity, wasVisible,
+                    (controller) -> {
+                        controller.dispatchOnStart();
+                        ValueAnimator anim = controller.getAnimationPlayer()
+                                .setDuration(RECENTS_LAUNCH_DURATION);
+                        anim.setInterpolator(FAST_OUT_SLOW_IN);
+                        anim.start();
+                });
+            factory.onRemoteAnimationReceived(null);
+            if (wasVisible) {
+                factory.createActivityController(RECENTS_LAUNCH_DURATION, INTERACTION_NORMAL);
+            }
+            mActivity = activity;
+            mRecentsView = mActivity.getOverviewPanel();
+            mRecentsView.setRunningTaskIconScaledDown(true /* isScaledDown */, false /* animate */);
+            if (!mUserEventLogged) {
+                activity.getUserEventDispatcher().logActionCommand(Action.Command.RECENTS_BUTTON,
+                        mHelper.getContainerType(), ContainerType.TASKSWITCHER);
+                mUserEventLogged = true;
+            }
+            return false;
         }
 
-        GestureState gestureState = mService.createGestureState(GestureState.DEFAULT_STATE);
-        gestureState.setHandlingAtomicEvent(true);
-        AbsSwipeUpHandler interactionHandler = mService.getSwipeUpHandlerFactory()
-                .newHandler(gestureState, cmd.createTime);
-        interactionHandler.setGestureEndCallback(
-                () -> onTransitionComplete(cmd, interactionHandler));
-        interactionHandler.initWhenReady();
-
-        RecentsAnimationListener recentAnimListener = new RecentsAnimationListener() {
-            @Override
-            public void onRecentsAnimationStart(RecentsAnimationController controller,
-                    RecentsAnimationTargets targets) {
-                interactionHandler.onGestureEnded(0, new PointF(), new PointF());
-                cmd.removeListener(this);
+        private AnimatorSet createWindowAnimation(RemoteAnimationTargetCompat[] targetCompats) {
+            if (LatencyTrackerCompat.isEnabled(mContext)) {
+                LatencyTrackerCompat.logToggleRecents(
+                        (int) (SystemClock.uptimeMillis() - mToggleClickedTime));
             }
 
-            @Override
-            public void onRecentsAnimationCanceled(HashMap<Integer, ThumbnailData> thumbnailDatas) {
-                interactionHandler.onGestureCancelled();
-                cmd.removeListener(this);
-
-                RecentsView createdRecents =
-                        activityInterface.getCreatedActivity().getOverviewPanel();
-                if (createdRecents != null) {
-                    createdRecents.onRecentsAnimationComplete();
-                }
+            if (mListener != null) {
+                mListener.unregister();
             }
-        };
-
-        if (mTaskAnimationManager.isRecentsAnimationRunning()) {
-            cmd.mActiveCallbacks = mTaskAnimationManager.continueRecentsAnimation(gestureState);
-            cmd.mActiveCallbacks.addListener(interactionHandler);
-            mTaskAnimationManager.notifyRecentsAnimationState(interactionHandler);
-            interactionHandler.onGestureStarted(true /*isLikelyToStartNewTask*/);
-
-            cmd.mActiveCallbacks.addListener(recentAnimListener);
-            mTaskAnimationManager.notifyRecentsAnimationState(recentAnimListener);
-        } else {
-            Intent intent = new Intent(interactionHandler.getLaunchIntent());
-            intent.putExtra(INTENT_EXTRA_LOG_TRACE_ID, gestureState.getGestureId());
-            cmd.mActiveCallbacks = mTaskAnimationManager.startRecentsAnimation(
-                    gestureState, intent, interactionHandler);
-            interactionHandler.onGestureStarted(false /*isLikelyToStartNewTask*/);
-            cmd.mActiveCallbacks.addListener(recentAnimListener);
-        }
-
-        Trace.beginAsyncSection(TRANSITION_NAME, 0);
-        return false;
-    }
-
-    private void onTransitionComplete(CommandInfo cmd, AbsSwipeUpHandler handler) {
-        cmd.removeListener(handler);
-        Trace.endAsyncSection(TRANSITION_NAME, 0);
-
-        if (cmd.type == TYPE_SHOW_NEXT_FOCUS) {
-            RecentsView rv =
-                    mOverviewComponentObserver.getActivityInterface().getVisibleRecentsView();
-            if (rv != null) {
-                // Ensure that recents view has focus so that it receives the followup key inputs
-                TaskView taskView = rv.getNextTaskView();
-                if (taskView == null) {
-                    taskView = rv.getTaskViewAt(0);
-                    if (taskView != null) {
-                        taskView.requestFocus();
-                    } else {
-                        rv.requestFocus();
+            AnimatorSet anim = new AnimatorSet();
+            anim.addListener(new AnimationSuccessListener() {
+                @Override
+                public void onAnimationSuccess(Animator animator) {
+                    if (mRecentsView != null) {
+                        mRecentsView.setRunningTaskIconScaledDown(false /* isScaledDown */,
+                                true /* animate */);
                     }
-                } else {
-                    taskView.requestFocus();
                 }
+            });
+            if (mActivity == null) {
+                Log.e(TAG, "Animation created, before activity");
+                anim.play(ValueAnimator.ofInt(0, 1).setDuration(100));
+                return anim;
             }
-        }
-        scheduleNextTask(cmd);
-    }
 
-    public void dump(PrintWriter pw) {
-        pw.println("OverviewCommandHelper:");
-        pw.println("  mPendingCommands=" + mPendingCommands.size());
-        if (!mPendingCommands.isEmpty()) {
-            pw.println("    pendingCommandType=" + mPendingCommands.get(0).type);
-        }
-    }
+            RemoteAnimationTargetSet targetSet =
+                    new RemoteAnimationTargetSet(targetCompats, MODE_CLOSING);
 
-    private static class CommandInfo {
-        public final long createTime = SystemClock.elapsedRealtime();
-        public final int type;
-        RecentsAnimationCallbacks mActiveCallbacks;
-
-        CommandInfo(int type) {
-            this.type = type;
-        }
-
-        void removeListener(RecentsAnimationListener listener) {
-            if (mActiveCallbacks != null) {
-                mActiveCallbacks.removeListener(listener);
+            // Use the top closing app to determine the insets for the animation
+            RemoteAnimationTargetCompat runningTaskTarget = targetSet.findTask(mRunningTaskId);
+            if (runningTaskTarget == null) {
+                Log.e(TAG, "No closing app");
+                anim.play(ValueAnimator.ofInt(0, 1).setDuration(100));
+                return anim;
             }
+
+            final ClipAnimationHelper clipHelper = new ClipAnimationHelper();
+
+            // At this point, the activity is already started and laid-out. Get the home-bounds
+            // relative to the screen using the rootView of the activity.
+            int loc[] = new int[2];
+            View rootView = mActivity.getRootView();
+            rootView.getLocationOnScreen(loc);
+            Rect homeBounds = new Rect(loc[0], loc[1],
+                    loc[0] + rootView.getWidth(), loc[1] + rootView.getHeight());
+            clipHelper.updateSource(homeBounds, runningTaskTarget);
+
+            TransformedRect targetRect = new TransformedRect();
+            mHelper.getSwipeUpDestinationAndLength(mActivity.getDeviceProfile(), mActivity,
+                    INTERACTION_NORMAL, targetRect);
+            clipHelper.updateTargetRect(targetRect);
+            clipHelper.prepareAnimation(false /* isOpening */);
+
+            SyncRtSurfaceTransactionApplier syncTransactionApplier =
+                    new SyncRtSurfaceTransactionApplier(rootView);
+            ValueAnimator valueAnimator = ValueAnimator.ofFloat(0, 1);
+            valueAnimator.setDuration(RECENTS_LAUNCH_DURATION);
+            valueAnimator.setInterpolator(TOUCH_RESPONSE_INTERPOLATOR);
+            valueAnimator.addUpdateListener((v) ->
+                    clipHelper.applyTransform(targetSet, (float) v.getAnimatedValue(),
+                            syncTransactionApplier));
+
+            if (targetSet.isAnimatingHome()) {
+                // If we are animating home, fade in the opening targets
+                RemoteAnimationTargetSet openingSet =
+                        new RemoteAnimationTargetSet(targetCompats, MODE_OPENING);
+
+                TransactionCompat transaction = new TransactionCompat();
+                valueAnimator.addUpdateListener((v) -> {
+                    for (RemoteAnimationTargetCompat app : openingSet.apps) {
+                        transaction.setAlpha(app.leash, (float) v.getAnimatedValue());
+                    }
+                    transaction.apply();
+                });
+            }
+            anim.play(valueAnimator);
+            return anim;
         }
     }
 }

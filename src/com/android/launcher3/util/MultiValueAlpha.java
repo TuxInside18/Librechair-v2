@@ -16,23 +16,16 @@
 
 package com.android.launcher3.util;
 
-import android.animation.Animator;
-import android.animation.ObjectAnimator;
-import android.util.FloatProperty;
+import android.util.Property;
 import android.view.View;
-
-import com.android.launcher3.anim.AlphaUpdateListener;
-
-import java.util.Arrays;
-import java.util.function.Consumer;
 
 /**
  * Utility class to handle separating a single value as a factor of multiple values
  */
 public class MultiValueAlpha {
 
-    public static final FloatProperty<AlphaProperty> VALUE =
-            new FloatProperty<AlphaProperty>("value") {
+    public static final Property<AlphaProperty, Float> VALUE =
+            new Property<AlphaProperty, Float>(Float.TYPE, "value") {
 
                 @Override
                 public Float get(AlphaProperty alphaProperty) {
@@ -40,7 +33,7 @@ public class MultiValueAlpha {
                 }
 
                 @Override
-                public void setValue(AlphaProperty object, float value) {
+                public void set(AlphaProperty object, Float value) {
                     object.setValue(value);
                 }
             };
@@ -49,8 +42,6 @@ public class MultiValueAlpha {
     private final AlphaProperty[] mMyProperties;
 
     private int mValidMask;
-    // Whether we should change from INVISIBLE to VISIBLE and vice versa at low alpha values.
-    private boolean mUpdateVisibility;
 
     public MultiValueAlpha(View view, int size) {
         mView = view;
@@ -64,18 +55,8 @@ public class MultiValueAlpha {
         }
     }
 
-    @Override
-    public String toString() {
-        return Arrays.toString(mMyProperties);
-    }
-
     public AlphaProperty getProperty(int index) {
         return mMyProperties[index];
-    }
-
-    /** Sets whether we should update between INVISIBLE and VISIBLE based on alpha. */
-    public void setUpdateVisibility(boolean updateVisibility) {
-        mUpdateVisibility = updateVisibility;
     }
 
     public class AlphaProperty {
@@ -85,8 +66,6 @@ public class MultiValueAlpha {
         private float mValue = 1;
         // Factor of all other alpha channels, only valid if mMyMask is present in mValidMask.
         private float mOthers = 1;
-
-        private Consumer<Float> mConsumer;
 
         AlphaProperty(int myMask) {
             mMyMask = myMask;
@@ -112,40 +91,11 @@ public class MultiValueAlpha {
             mValidMask = mMyMask;
             mValue = value;
 
-            final float alpha = mOthers * mValue;
-            mView.setAlpha(alpha);
-            if (mUpdateVisibility) {
-                AlphaUpdateListener.updateVisibility(mView);
-            }
-            if (mConsumer != null) {
-                mConsumer.accept(mValue);
-            }
+            mView.setAlpha(mOthers * mValue);
         }
 
         public float getValue() {
             return mValue;
-        }
-
-        public void setConsumer(Consumer<Float> consumer) {
-            mConsumer = consumer;
-            if (mConsumer != null) {
-                mConsumer.accept(mValue);
-            }
-        }
-
-        @Override
-        public String toString() {
-            return Float.toString(mValue);
-        }
-
-        /**
-         * Creates and returns an Animator from the current value to the given value. Future
-         * animator on the same target automatically cancels the previous one.
-         */
-        public Animator animateToValue(float value) {
-            ObjectAnimator animator = ObjectAnimator.ofFloat(this, VALUE, value);
-            animator.setAutoCancel(true);
-            return animator;
         }
     }
 }

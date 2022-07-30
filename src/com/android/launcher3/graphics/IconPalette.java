@@ -16,20 +16,17 @@
 
 package com.android.launcher3.graphics;
 
-import static com.android.launcher3.icons.GraphicsUtils.setColorAlphaBound;
-
 import android.app.Notification;
 import android.content.Context;
 import android.graphics.Color;
+import androidx.core.content.ContextCompat;
+import androidx.core.graphics.ColorUtils;
 import android.util.Log;
-
 import com.android.launcher3.R;
 import com.android.launcher3.util.Themes;
 
-import androidx.core.graphics.ColorUtils;
-
 /**
- * Contains colors based on the dominant color of an icon.
+ * Contains colors based on the dominant color of an iconView.
  */
 public class IconPalette {
 
@@ -40,7 +37,7 @@ public class IconPalette {
     private static final float MIN_PRELOAD_COLOR_LIGHTNESS = 0.6f;
 
     /**
-     * Returns a color suitable for the progress bar color of preload icon.
+     * Returns a color suitable for the progress bar color of preload iconView.
      */
     public static int getPreloadProgressColor(Context context, int dominantColor) {
         int result = dominantColor;
@@ -59,7 +56,7 @@ public class IconPalette {
 
     /**
      * Resolves a color such that it has enough contrast to be used as the
-     * color of an icon or text on the given background color.
+     * color of an iconView or text on the given background color.
      *
      * @return a color of the same hue with enough contrast against the background.
      *
@@ -90,7 +87,7 @@ public class IconPalette {
      */
     private static int resolveColor(Context context, int color) {
         if (color == Notification.COLOR_DEFAULT) {
-            return context.getColor(R.color.notification_icon_default_color);
+            return ContextCompat.getColor(context, R.color.notification_icon_default_color);
         }
         return color;
     }
@@ -108,7 +105,7 @@ public class IconPalette {
      *
      * This was copied from com.android.internal.util.NotificationColorUtil.
      */
-    private static int ensureTextContrast(int color, int bg) {
+    public static int ensureTextContrast(int color, int bg) {
         return findContrastColor(color, bg, 4.5);
     }
     /**
@@ -148,8 +145,8 @@ public class IconPalette {
         return ColorUtils.LABToColor(low, a, b);
     }
 
-    public static int getMutedColor(int color, float whiteScrimAlpha) {
-        int whiteScrim = setColorAlphaBound(Color.WHITE, (int) (255 * whiteScrimAlpha));
-        return ColorUtils.compositeColors(whiteScrim, color);
+    public static int getMutedColor(Context context, int color, float scrimAlpha) {
+        int scrim = ColorUtils.setAlphaComponent(Color.WHITE, (int) (255 * scrimAlpha));
+        return ColorUtils.compositeColors(scrim, color);
     }
 }

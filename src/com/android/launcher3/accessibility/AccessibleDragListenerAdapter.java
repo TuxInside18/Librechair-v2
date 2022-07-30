@@ -16,9 +16,7 @@
 
 package com.android.launcher3.accessibility;
 
-import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewGroup.OnHierarchyChangeListener;
 
 import com.android.launcher3.CellLayout;
 import com.android.launcher3.DropTarget.DragObject;
@@ -26,53 +24,34 @@ import com.android.launcher3.Launcher;
 import com.android.launcher3.dragndrop.DragController.DragListener;
 import com.android.launcher3.dragndrop.DragOptions;
 
-import java.util.function.Function;
-
 /**
  * Utility listener to enable/disable accessibility drag flags for a ViewGroup
  * containing CellLayouts
  */
-public class AccessibleDragListenerAdapter implements DragListener, OnHierarchyChangeListener {
+public class AccessibleDragListenerAdapter implements DragListener {
 
     private final ViewGroup mViewGroup;
-    private final Function<CellLayout, DragAndDropAccessibilityDelegate> mDelegateFactory;
+    private final int mDragType;
 
     /**
-     * @param parent the viewgroup containing all the children
-     * @param delegateFactory function to create no delegates
+     * @param parent
+     * @param dragType either {@link CellLayout#WORKSPACE_ACCESSIBILITY_DRAG} or
+     *                 {@link CellLayout#FOLDER_ACCESSIBILITY_DRAG}
      */
-    public AccessibleDragListenerAdapter(ViewGroup parent,
-            Function<CellLayout, DragAndDropAccessibilityDelegate> delegateFactory) {
+    public AccessibleDragListenerAdapter(ViewGroup parent, int dragType) {
         mViewGroup = parent;
-        mDelegateFactory = delegateFactory;
+        mDragType = dragType;
     }
 
     @Override
     public void onDragStart(DragObject dragObject, DragOptions options) {
-        mViewGroup.setOnHierarchyChangeListener(this);
         enableAccessibleDrag(true);
     }
 
     @Override
     public void onDragEnd() {
-        mViewGroup.setOnHierarchyChangeListener(null);
         enableAccessibleDrag(false);
         Launcher.getLauncher(mViewGroup.getContext()).getDragController().removeDragListener(this);
-    }
-
-
-    @Override
-    public void onChildViewAdded(View parent, View child) {
-        if (parent == mViewGroup) {
-            setEnableForLayout((CellLayout) child, true);
-        }
-    }
-
-    @Override
-    public void onChildViewRemoved(View parent, View child) {
-        if (parent == mViewGroup) {
-            setEnableForLayout((CellLayout) child, false);
-        }
     }
 
     protected void enableAccessibleDrag(boolean enable) {
@@ -82,6 +61,6 @@ public class AccessibleDragListenerAdapter implements DragListener, OnHierarchyC
     }
 
     protected final void setEnableForLayout(CellLayout layout, boolean enable) {
-        layout.setDragAndDropAccessibilityDelegate(enable ? mDelegateFactory.apply(layout) : null);
+        layout.enableAccessibleDrag(enable, mDragType);
     }
 }

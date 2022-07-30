@@ -16,41 +16,46 @@
 
 package com.android.launcher3.widget;
 
+import android.appwidget.AppWidgetHostView;
 import android.appwidget.AppWidgetProviderInfo;
 import android.content.Context;
 import android.content.res.Configuration;
+import android.graphics.PointF;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.SystemClock;
+import androidx.recyclerview.widget.RecyclerView;
 import android.util.SparseBooleanArray;
-import android.util.SparseIntArray;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewDebug;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.AdapterView;
 import android.widget.Advanceable;
 import android.widget.RemoteViews;
-
-import androidx.annotation.Nullable;
-
 import com.android.launcher3.CheckLongPressHelper;
+import com.android.launcher3.ItemInfo;
 import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAppWidgetInfo;
+import com.android.launcher3.LauncherAppWidgetProviderInfo;
 import com.android.launcher3.R;
+import com.android.launcher3.SimpleOnStylusPressListener;
+import com.android.launcher3.StylusEventHelper;
 import com.android.launcher3.Utilities;
 import com.android.launcher3.dragndrop.DragLayer;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.LauncherAppWidgetInfo;
-import com.android.launcher3.util.Themes;
 import com.android.launcher3.views.BaseDragLayer.TouchCompleteListener;
+import com.android.launcher3.widget.custom.CustomAppWidgetProviderInfo;
+import java.util.ArrayList;
 
 /**
  * {@inheritDoc}
  */
-public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
-        implements TouchCompleteListener, View.OnLongClickListener,
-        LocalColorExtractor.Listener {
+public class LauncherAppWidgetHostView extends AppWidgetHostView
+        implements TouchCompleteListener, View.OnLongClickListener {
 
     // Related to the auto-advancing of widgets
     private static final long ADVANCE_INTERVAL = 20000;
@@ -58,62 +63,54 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
 
     // Maintains a list of widget ids which are supposed to be auto advanced.
     private static final SparseBooleanArray sAutoAdvanceWidgetIds = new SparseBooleanArray();
-    // Maximum duration for which updates can be deferred.
-    private static final long UPDATE_LOCK_TIMEOUT_MILLIS = 1000;
 
-    private final Rect mTempRect = new Rect();
+    protected final LayoutInflater mInflater;
+
     private final CheckLongPressHelper mLongPressHelper;
+    private final StylusEventHelper mStylusEventHelper;
     protected final Launcher mLauncher;
 
     @ViewDebug.ExportedProperty(category = "launcher")
     private boolean mReinflateOnConfigChange;
 
-    // Maintain the color manager.
-    private final LocalColorExtractor mColorExtractor;
+    private float mSlop;
+
+    @ViewDebug.ExportedProperty(category = "launcher")
+    private boolean mChildrenFocused;
 
     private boolean mIsScrollable;
     private boolean mIsAttachedToWindow;
     private boolean mIsAutoAdvanceRegistered;
     private Runnable mAutoAdvanceRunnable;
 
-    private long mDeferUpdatesUntilMillis = 0;
-    private RemoteViews mDeferredRemoteViews;
-    private boolean mHasDeferredColorChange = false;
-    private @Nullable SparseIntArray mDeferredColorChange = null;
+    /**
+     * The scaleX and scaleY value such that the widget fits within its cellspans, scaleX = scaleY.
+     */
+    private float mScaleToFit = 1f;
 
-    // The following member variables are only used during drag-n-drop.
-    private boolean mIsInDragMode = false;
-    /** The drag content width which is only set when the drag content scale is not 1f. */
-    private int mDragContentWidth = 0;
-    /** The drag content height which is only set when the drag content scale is not 1f. */
-    private int mDragContentHeight = 0;
+    /**
+     * The translation values to center the widget within its cellspans.
+     */
+    private final PointF mTranslationForCentering = new PointF(0, 0);
 
     public LauncherAppWidgetHostView(Context context) {
         super(context);
         mLauncher = Launcher.getLauncher(context);
         mLongPressHelper = new CheckLongPressHelper(this, this);
+        mStylusEventHelper = new StylusEventHelper(new SimpleOnStylusPressListener(this), this);
+        mInflater = LayoutInflater.from(context);
         setAccessibilityDelegate(mLauncher.getAccessibilityDelegate());
         setBackgroundResource(R.drawable.widget_internal_focus_bg);
 
-        if (Utilities.ATLEAST_Q && Themes.getAttrBoolean(mLauncher, R.attr.isWorkspaceDarkText)) {
-            setOnLightBackground(true);
-        }
-        mColorExtractor = LocalColorExtractor.newInstance(getContext());
-    }
-
-    @Override
-    public void setColorResources(@Nullable SparseIntArray colors) {
-        if (colors == null) {
-            resetColorResources();
-        } else {
-            super.setColorResources(colors);
+        if (Utilities.ATLEAST_OREO) {
+            setExecutor(Utilities.THREAD_POOL_EXECUTOR);
         }
     }
 
     @Override
     public boolean onLongClick(View view) {
         if (mIsScrollable) {
-            DragLayer dragLayer = mLauncher.getDragLayer();
+            DragLayer dragLayer = Launcher.getLauncher(getContext()).getDragLayer();
             dragLayer.requestDisallowInterceptTouchEvent(false);
         }
         view.performLongClick();
@@ -121,13 +118,24 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
     }
 
     @Override
-    public void updateAppWidget(RemoteViews remoteViews) {
-        if (isDeferringUpdates()) {
-            mDeferredRemoteViews = remoteViews;
-            return;
+    public void setAppWidget(int appWidgetId, AppWidgetProviderInfo info) {
+        super.setAppWidget(appWidgetId, info);
+        if (info != null && Utilities.getLawnchairPrefs(getContext()).getAllowFullWidthWidgets()) {
+            setPadding(0, 0, 0, 0);
+        } else if (info instanceof CustomAppWidgetProviderInfo) {
+            if (((CustomAppWidgetProviderInfo) info).noPadding) {
+                setPadding(0, 0, 0, 0);
+            }
         }
-        mDeferredRemoteViews = null;
+    }
 
+    @Override
+    protected View getErrorView() {
+        return mInflater.inflate(R.layout.appwidget_error, this, false);
+    }
+
+    @Override
+    public void updateAppWidget(RemoteViews remoteViews) {
         super.updateAppWidget(remoteViews);
 
         // The provider info or the views might have changed.
@@ -146,10 +154,10 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
     }
 
     private boolean checkScrollableRecursively(ViewGroup viewGroup) {
-        if (viewGroup instanceof AdapterView) {
+        if (viewGroup instanceof AdapterView || viewGroup instanceof RecyclerView) {
             return true;
         } else {
-            for (int i = 0; i < viewGroup.getChildCount(); i++) {
+            for (int i=0; i < viewGroup.getChildCount(); i++) {
                 View child = viewGroup.getChildAt(i);
                 if (child instanceof ViewGroup) {
                     if (checkScrollableRecursively((ViewGroup) child)) {
@@ -161,74 +169,91 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
         return false;
     }
 
-    /**
-     * Returns true if the application of {@link RemoteViews} through {@link #updateAppWidget} and
-     * colors through {@link #onColorsChanged} are currently being deferred.
-     * @see #beginDeferringUpdates()
-     */
-    private boolean isDeferringUpdates() {
-        return SystemClock.uptimeMillis() < mDeferUpdatesUntilMillis;
-    }
-
-    /**
-     * Begin deferring the application of any {@link RemoteViews} updates made through
-     * {@link #updateAppWidget} and color changes through {@link #onColorsChanged} until
-     * {@link #endDeferringUpdates()} has been called or the next {@link #updateAppWidget} or
-     * {@link #onColorsChanged} call after {@link #UPDATE_LOCK_TIMEOUT_MILLIS} have elapsed.
-     */
-    public void beginDeferringUpdates() {
-        mDeferUpdatesUntilMillis = SystemClock.uptimeMillis() + UPDATE_LOCK_TIMEOUT_MILLIS;
-    }
-
-    /**
-     * Stop deferring the application of {@link RemoteViews} updates made through
-     * {@link #updateAppWidget} and color changes made through {@link #onColorsChanged} and apply
-     * any deferred updates.
-     */
-    public void endDeferringUpdates() {
-        RemoteViews remoteViews;
-        SparseIntArray deferredColors;
-        boolean hasDeferredColors;
-        mDeferUpdatesUntilMillis = 0;
-        remoteViews = mDeferredRemoteViews;
-        mDeferredRemoteViews = null;
-        deferredColors = mDeferredColorChange;
-        hasDeferredColors = mHasDeferredColorChange;
-        mDeferredColorChange = null;
-        mHasDeferredColorChange = false;
-
-        if (remoteViews != null) {
-            updateAppWidget(remoteViews);
-        }
-        if (hasDeferredColors) {
-            onColorsChanged(deferredColors);
+    private void notifyCustomHandlers(ViewGroup group) {
+        if (group instanceof CustomWidgetView) {
+            ((CustomWidgetView) group).bindWidget((CustomAppWidgetProviderInfo) getAppWidgetInfo());
+        } else {
+            for (int i = 0; i < group.getChildCount(); ++i) {
+                if (group.getChildAt(i) instanceof ViewGroup) {
+                    notifyCustomHandlers((ViewGroup) group.getChildAt(i));
+                }
+            }
         }
     }
 
     public boolean onInterceptTouchEvent(MotionEvent ev) {
+        // Just in case the previous long press hasn't been cleared, we make sure to start fresh
+        // on touch down.
         if (ev.getAction() == MotionEvent.ACTION_DOWN) {
-            DragLayer dragLayer = mLauncher.getDragLayer();
-            if (mIsScrollable) {
-                dragLayer.requestDisallowInterceptTouchEvent(true);
-            }
-            dragLayer.setTouchCompleteListener(this);
+            mLongPressHelper.cancelLongPress();
         }
-        mLongPressHelper.onTouchEvent(ev);
-        return mLongPressHelper.hasPerformedLongPress();
+
+        // Consume any touch events for ourselves after longpress is triggered
+        if (mLongPressHelper.hasPerformedLongPress()) {
+            mLongPressHelper.cancelLongPress();
+            return true;
+        }
+
+        // Watch for longpress or stylus button press events at this level to
+        // make sure users can always pick up this widget
+        if (mStylusEventHelper.onMotionEvent(ev)) {
+            mLongPressHelper.cancelLongPress();
+            return true;
+        }
+
+        switch (ev.getAction()) {
+            case MotionEvent.ACTION_DOWN: {
+                DragLayer dragLayer = Launcher.getLauncher(getContext()).getDragLayer();
+
+                if (mIsScrollable) {
+                     dragLayer.requestDisallowInterceptTouchEvent(true);
+                }
+                if (!mStylusEventHelper.inStylusButtonPressed()) {
+                    mLongPressHelper.postCheckForLongPress();
+                }
+                dragLayer.setTouchCompleteListener(this);
+                break;
+            }
+
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                mLongPressHelper.cancelLongPress();
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (!Utilities.pointInView(this, ev.getX(), ev.getY(), mSlop)) {
+                    mLongPressHelper.cancelLongPress();
+                }
+                break;
+        }
+
+        // Otherwise continue letting touch events fall through to children
+        return false;
     }
 
     public boolean onTouchEvent(MotionEvent ev) {
-        mLongPressHelper.onTouchEvent(ev);
-        // We want to keep receiving though events to be able to cancel long press on ACTION_UP
-        return true;
+        // If the widget does not handle touch, then cancel
+        // long press when we release the touch
+        switch (ev.getAction()) {
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                mLongPressHelper.cancelLongPress();
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (!Utilities.pointInView(this, ev.getX(), ev.getY(), mSlop)) {
+                    mLongPressHelper.cancelLongPress();
+                }
+                break;
+        }
+        return false;
     }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        mSlop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+
         mIsAttachedToWindow = true;
         checkIfAutoAdvance();
-        mColorExtractor.setListener(this);
     }
 
     @Override
@@ -239,7 +264,6 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
         // state is updated. So isAttachedToWindow() will return true until next frame.
         mIsAttachedToWindow = false;
         checkIfAutoAdvance();
-        mColorExtractor.setListener(null);
     }
 
     @Override
@@ -268,67 +292,119 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
     }
 
     @Override
+    public int getDescendantFocusability() {
+        return mChildrenFocused ? ViewGroup.FOCUS_BEFORE_DESCENDANTS
+                : ViewGroup.FOCUS_BLOCK_DESCENDANTS;
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (mChildrenFocused && event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE
+                && event.getAction() == KeyEvent.ACTION_UP) {
+            mChildrenFocused = false;
+            requestFocus();
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (!mChildrenFocused && keyCode == KeyEvent.KEYCODE_ENTER) {
+            event.startTracking();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (event.isTracking()) {
+            if (!mChildrenFocused && keyCode == KeyEvent.KEYCODE_ENTER) {
+                mChildrenFocused = true;
+                ArrayList<View> focusableChildren = getFocusables(FOCUS_FORWARD);
+                focusableChildren.remove(this);
+                int childrenCount = focusableChildren.size();
+                switch (childrenCount) {
+                    case 0:
+                        mChildrenFocused = false;
+                        break;
+                    case 1: {
+                        if (getTag() instanceof ItemInfo) {
+                            ItemInfo item = (ItemInfo) getTag();
+                            if (item.spanX == 1 && item.spanY == 1) {
+                                focusableChildren.get(0).performClick();
+                                mChildrenFocused = false;
+                                return true;
+                            }
+                        }
+                        // continue;
+                    }
+                    default:
+                        focusableChildren.get(0).requestFocus();
+                        return true;
+                }
+            }
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
+    @Override
+    protected void onFocusChanged(boolean gainFocus, int direction, Rect previouslyFocusedRect) {
+        if (gainFocus) {
+            mChildrenFocused = false;
+            dispatchChildFocus(false);
+        }
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect);
+    }
+
+    @Override
+    public void requestChildFocus(View child, View focused) {
+        super.requestChildFocus(child, focused);
+        dispatchChildFocus(mChildrenFocused && focused != null);
+        if (focused != null) {
+            focused.setFocusableInTouchMode(false);
+        }
+    }
+
+    @Override
+    public void clearChildFocus(View child) {
+        super.clearChildFocus(child);
+        dispatchChildFocus(false);
+    }
+
+    @Override
+    public boolean dispatchUnhandledMove(View focused, int direction) {
+        return mChildrenFocused;
+    }
+
+    private void dispatchChildFocus(boolean childIsFocused) {
+        // The host view's background changes when selected, to indicate the focus is inside.
+        setSelected(childIsFocused);
+    }
+
+    public void switchToErrorView() {
+        // Update the widget with 0 Layout id, to reset the view to error view.
+        updateAppWidget(new RemoteViews(getAppWidgetInfo().provider.getPackageName(), 0));
+    }
+
+    @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-        super.onLayout(changed, left, top, right, bottom);
+        try {
+            super.onLayout(changed, left, top, right, bottom);
+        } catch (final RuntimeException e) {
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    switchToErrorView();
+                }
+            });
+        }
+
         mIsScrollable = checkScrollableRecursively(this);
-
-        if (!mIsInDragMode && getTag() instanceof LauncherAppWidgetInfo) {
-            LauncherAppWidgetInfo info = (LauncherAppWidgetInfo) getTag();
-            mTempRect.set(left, top, right, bottom);
-            mColorExtractor.setWorkspaceLocation(mTempRect, (View) getParent(), info.screenId);
+        if (getAppWidgetInfo() instanceof CustomAppWidgetProviderInfo) {
+            notifyCustomHandlers(this);
         }
-    }
-
-    @Override
-    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-        if (mIsInDragMode && mDragContentWidth > 0 && mDragContentHeight > 0
-                && getChildCount() == 1) {
-            measureChild(getChildAt(0), MeasureSpec.getSize(mDragContentWidth),
-                    MeasureSpec.getSize(mDragContentHeight));
-        }
-    }
-
-    /** Starts the drag mode. */
-    public void startDrag() {
-        mIsInDragMode = true;
-        // In the case of dragging a scaled preview from widgets picker, we should reuse the
-        // previously measured dimension from WidgetCell#measureAndComputeWidgetPreviewScale, which
-        // measures the dimension of a widget preview without its parent's bound before scaling
-        // down.
-        if ((getScaleX() != 1f || getScaleY() != 1f) && getChildCount() == 1) {
-            mDragContentWidth = getChildAt(0).getMeasuredWidth();
-            mDragContentHeight = getChildAt(0).getMeasuredHeight();
-        }
-    }
-
-    /** Handles a drag event occurred on a workspace page corresponding to the {@code screenId}. */
-    public void handleDrag(Rect rectInView, View view, int screenId) {
-        if (mIsInDragMode) {
-            mColorExtractor.setWorkspaceLocation(rectInView, view, screenId);
-        }
-    }
-
-    /** Ends the drag mode. */
-    public void endDrag() {
-        mIsInDragMode = false;
-        mDragContentWidth = 0;
-        mDragContentHeight = 0;
-        requestLayout();
-    }
-
-    @Override
-    public void onColorsChanged(SparseIntArray colors) {
-        if (isDeferringUpdates()) {
-            mDeferredColorChange = colors;
-            mHasDeferredColorChange = true;
-            return;
-        }
-        mDeferredColorChange = null;
-        mHasDeferredColorChange = false;
-
-        // setColorResources will reapply the view, which must happen in the UI thread.
-        post(() -> setColorResources(colors));
     }
 
     @Override
@@ -378,7 +454,12 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
         if (shouldRegisterAutoAdvance != mIsAutoAdvanceRegistered) {
             mIsAutoAdvanceRegistered = shouldRegisterAutoAdvance;
             if (mAutoAdvanceRunnable == null) {
-                mAutoAdvanceRunnable = this::runAutoAdvance;
+                mAutoAdvanceRunnable = new Runnable() {
+                    @Override
+                    public void run() {
+                        runAutoAdvance();
+                    }
+                };
             }
 
             handler.removeCallbacks(mAutoAdvanceRunnable);
@@ -407,6 +488,26 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
         scheduleNextAdvance();
     }
 
+    public void setScaleToFit(float scale) {
+        mScaleToFit = scale;
+        setScaleX(scale);
+        setScaleY(scale);
+    }
+
+    public float getScaleToFit() {
+        return mScaleToFit;
+    }
+
+    public void setTranslationForCentering(float x, float y) {
+        mTranslationForCentering.set(x, y);
+        setTranslationX(x);
+        setTranslationY(y);
+    }
+
+    public PointF getTranslationForCentering() {
+        return mTranslationForCentering;
+    }
+
     @Override
     protected void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
@@ -423,22 +524,14 @@ public class LauncherAppWidgetHostView extends BaseLauncherAppWidgetHostView
             return;
         }
         LauncherAppWidgetInfo info = (LauncherAppWidgetInfo) getTag();
-        if (info == null) {
-            // This occurs when LauncherAppWidgetHostView is used to render a preview layout.
-            return;
-        }
         // Remove and rebind the current widget (which was inflated in the wrong
         // orientation), but don't delete it from the database
         mLauncher.removeItem(this, info, false  /* deleteFromDb */);
         mLauncher.bindAppWidget(info);
     }
 
-    @Override
-    protected boolean shouldAllowDirectClick() {
-        if (getTag() instanceof ItemInfo) {
-            ItemInfo item = (ItemInfo) getTag();
-            return item.spanX == 1 && item.spanY == 1;
-        }
-        return false;
+    public interface CustomWidgetView {
+
+        void bindWidget(CustomAppWidgetProviderInfo info);
     }
 }

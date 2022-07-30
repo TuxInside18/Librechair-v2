@@ -16,10 +16,6 @@
 
 package com.android.launcher3.notification;
 
-import static com.android.launcher3.util.Executors.MAIN_EXECUTOR;
-import static com.android.launcher3.util.Executors.MODEL_EXECUTOR;
-import static com.android.launcher3.util.SettingsCache.NOTIFICATION_BADGING_URI;
-
 import android.annotation.TargetApi;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -29,16 +25,17 @@ import android.os.Looper;
 import android.os.Message;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
+import androidx.annotation.Keep;
+import androidx.annotation.Nullable;
 import android.text.TextUtils;
+import android.util.ArraySet;
 import android.util.Log;
 import android.util.Pair;
 
-import androidx.annotation.AnyThread;
-import androidx.annotation.Nullable;
-import androidx.annotation.WorkerThread;
-
+import com.android.launcher3.LauncherModel;
+import com.android.launcher3.Utilities;
 import com.android.launcher3.util.PackageUserKey;
-import com.android.launcher3.util.SettingsCache;
+import com.android.launcher3.util.SettingsObserver;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -46,9 +43,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.Set;
 
-import app.lawnchair.NotificationManager;
+import static ch.deletescape.lawnchair.settings.ui.SettingsActivity.NOTIFICATION_BADGING;
 
 /**
  * A {@link NotificationListenerService} that sends updates to its
@@ -64,17 +61,16 @@ public class NotificationListener extends NotificationListenerService {
     private static final int MSG_NOTIFICATION_POSTED = 1;
     private static final int MSG_NOTIFICATION_REMOVED = 2;
     private static final int MSG_NOTIFICATION_FULL_REFRESH = 3;
-    private static final int MSG_CANCEL_NOTIFICATION = 4;
-    private static final int MSG_RANKING_UPDATE = 5;
 
     private static NotificationListener sNotificationListenerInstance = null;
     private static NotificationsChangedListener sNotificationsChangedListener;
+    private static StatusBarNotificationsChangedListener sStatusBarNotificationsChangedListener;
     private static boolean sIsConnected;
+    private static boolean sIsCreated;
 
     private final Handler mWorkerHandler;
     private final Handler mUiHandler;
     private final Ranking mTempRanking = new Ranking();
-
     /** Maps groupKey's to the corresponding group of notifications. */
     private final Map<String, NotificationGroup> mNotificationGroupMap = new HashMap<>();
     /** Maps keys to their corresponding current group key */
@@ -83,15 +79,85 @@ public class NotificationListener extends NotificationListenerService {
     /** The last notification key that was dismissed from launcher UI */
     private String mLastKeyDismissedByLauncher;
 
-    private SettingsCache mSettingsCache;
-    private SettingsCache.OnChangeListener mNotificationSettingsChangedListener;
+    private SettingsObserver mNotificationBadgingObserver;
 
-    private NotificationManager mNotificationManager;
+    private final Handler.Callback mWorkerCallback = new Handler.Callback() {
+        @Override
+        public boolean handleMessage(Message message) {
+            switch (message.what) {
+                case MSG_NOTIFICATION_POSTED:
+                    mUiHandler.obtainMessage(message.what, message.obj).sendToTarget();
+                    break;
+                case MSG_NOTIFICATION_REMOVED:
+                    mUiHandler.obtainMessage(message.what, message.obj).sendToTarget();
+                    break;
+                case MSG_NOTIFICATION_FULL_REFRESH:
+                    List<StatusBarNotification> activeNotifications;
+                    if (sIsConnected) {
+                        try {
+                            activeNotifications = filterNotifications(getActiveNotifications());
+                        } catch (SecurityException ex) {
+                            Log.e(TAG, "SecurityException: failed to fetch notifications");
+                            activeNotifications = new ArrayList<StatusBarNotification>();
+
+                        }
+                    } else {
+                        activeNotifications = new ArrayList<StatusBarNotification>();
+                    }
+
+                    mUiHandler.obtainMessage(message.what, activeNotifications).sendToTarget();
+                    break;
+            }
+            return true;
+        }
+    };
+
+    private final Handler.Callback mUiCallback = new Handler.Callback() {
+        @Override
+        public boolean handleMessage(Message message) {
+            switch (message.what) {
+                case MSG_NOTIFICATION_POSTED:
+                    if (sNotificationsChangedListener != null) {
+                        NotificationPostedMsg msg = (NotificationPostedMsg) message.obj;
+                        sNotificationsChangedListener.onNotificationPosted(msg.packageUserKey,
+                                msg.notificationKey, msg.shouldBeFilteredOut);
+                    }
+                    break;
+                case MSG_NOTIFICATION_REMOVED:
+                    if (sNotificationsChangedListener != null) {
+                        Pair<PackageUserKey, NotificationKeyData> pair
+                                = (Pair<PackageUserKey, NotificationKeyData>) message.obj;
+                        sNotificationsChangedListener.onNotificationRemoved(pair.first, pair.second);
+                    }
+                    break;
+                case MSG_NOTIFICATION_FULL_REFRESH:
+                    if (sNotificationsChangedListener != null) {
+                        sNotificationsChangedListener.onNotificationFullRefresh(
+                                (List<StatusBarNotification>) message.obj);
+                    }
+                    break;
+            }
+            return true;
+        }
+    };
 
     public NotificationListener() {
-        mWorkerHandler = new Handler(MODEL_EXECUTOR.getLooper(), this::handleWorkerMessage);
-        mUiHandler = new Handler(Looper.getMainLooper(), this::handleUiMessage);
+        super();
+        mWorkerHandler = new Handler(LauncherModel.getWorkerLooper(), mWorkerCallback);
+        mUiHandler = new Handler(Looper.getMainLooper(), mUiCallback);
         sNotificationListenerInstance = this;
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        sIsCreated = true;
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        sIsCreated = false;
     }
 
     public static @Nullable NotificationListener getInstanceIfConnected() {
@@ -104,113 +170,27 @@ public class NotificationListener extends NotificationListenerService {
         NotificationListener notificationListener = getInstanceIfConnected();
         if (notificationListener != null) {
             notificationListener.onNotificationFullRefresh();
-        } else {
-            // User turned off dots globally, so we unbound this service;
+        } else if (!sIsCreated && sNotificationsChangedListener != null) {
+            // User turned off badging globally, so we unbound this service;
             // tell the listener that there are no notifications to remove dots.
-            MODEL_EXECUTOR.submit(() -> MAIN_EXECUTOR.submit(() ->
-                            listener.onNotificationFullRefresh(Collections.emptyList())));
+            sNotificationsChangedListener.onNotificationFullRefresh(
+                    Collections.<StatusBarNotification>emptyList());
         }
+    }
+
+    @Keep
+    public static void setStatusBarNotificationsChangedListener
+            (StatusBarNotificationsChangedListener listener) {
+        sStatusBarNotificationsChangedListener = listener;
     }
 
     public static void removeNotificationsChangedListener() {
         sNotificationsChangedListener = null;
     }
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        mNotificationManager = NotificationManager.INSTANCE.get(this);
-    }
-
-    private boolean handleWorkerMessage(Message message) {
-        switch (message.what) {
-            case MSG_NOTIFICATION_POSTED: {
-                StatusBarNotification sbn = (StatusBarNotification) message.obj;
-                mUiHandler.obtainMessage(notificationIsValidForUI(sbn)
-                                ? MSG_NOTIFICATION_POSTED : MSG_NOTIFICATION_REMOVED,
-                        toKeyPair(sbn)).sendToTarget();
-                return true;
-            }
-            case MSG_NOTIFICATION_REMOVED: {
-                StatusBarNotification sbn = (StatusBarNotification) message.obj;
-                mUiHandler.obtainMessage(MSG_NOTIFICATION_REMOVED,
-                        toKeyPair(sbn)).sendToTarget();
-
-                NotificationGroup notificationGroup = mNotificationGroupMap.get(sbn.getGroupKey());
-                String key = sbn.getKey();
-                if (notificationGroup != null) {
-                    notificationGroup.removeChildKey(key);
-                    if (notificationGroup.isEmpty()) {
-                        if (key.equals(mLastKeyDismissedByLauncher)) {
-                            // Only cancel the group notification if launcher dismissed the
-                            // last child.
-                            cancelNotification(notificationGroup.getGroupSummaryKey());
-                        }
-                        mNotificationGroupMap.remove(sbn.getGroupKey());
-                    }
-                }
-                if (key.equals(mLastKeyDismissedByLauncher)) {
-                    mLastKeyDismissedByLauncher = null;
-                }
-                return true;
-            }
-            case MSG_NOTIFICATION_FULL_REFRESH:
-                List<StatusBarNotification> activeNotifications = null;
-                if (sIsConnected) {
-                    try {
-                        activeNotifications = Arrays.stream(getActiveNotifications())
-                                .filter(this::notificationIsValidForUI)
-                                .collect(Collectors.toList());
-                    } catch (SecurityException ex) {
-                        Log.e(TAG, "SecurityException: failed to fetch notifications");
-                        activeNotifications = new ArrayList<>();
-                    }
-                } else {
-                    activeNotifications = new ArrayList<>();
-                }
-
-                mUiHandler.obtainMessage(message.what, activeNotifications).sendToTarget();
-                return true;
-            case MSG_CANCEL_NOTIFICATION: {
-                mLastKeyDismissedByLauncher = (String) message.obj;
-                cancelNotification(mLastKeyDismissedByLauncher);
-                return true;
-            }
-            case MSG_RANKING_UPDATE: {
-                String[] keys = ((RankingMap) message.obj).getOrderedKeys();
-                for (StatusBarNotification sbn : getActiveNotifications(keys)) {
-                    updateGroupKeyIfNecessary(sbn);
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean handleUiMessage(Message message) {
-        switch (message.what) {
-            case MSG_NOTIFICATION_POSTED:
-                if (sNotificationsChangedListener != null) {
-                    Pair<PackageUserKey, NotificationKeyData> msg = (Pair) message.obj;
-                    sNotificationsChangedListener.onNotificationPosted(
-                            msg.first, msg.second);
-                }
-                break;
-            case MSG_NOTIFICATION_REMOVED:
-                if (sNotificationsChangedListener != null) {
-                    Pair<PackageUserKey, NotificationKeyData> msg = (Pair) message.obj;
-                    sNotificationsChangedListener.onNotificationRemoved(
-                            msg.first, msg.second);
-                }
-                break;
-            case MSG_NOTIFICATION_FULL_REFRESH:
-                if (sNotificationsChangedListener != null) {
-                    sNotificationsChangedListener.onNotificationFullRefresh(
-                            (List<StatusBarNotification>) message.obj);
-                }
-                break;
-        }
-        return true;
+    @Keep
+    public static void removeStatusBarNotificationsChangedListener() {
+        sStatusBarNotificationsChangedListener = null;
     }
 
     @Override
@@ -218,65 +198,108 @@ public class NotificationListener extends NotificationListenerService {
         super.onListenerConnected();
         sIsConnected = true;
 
-        // Register an observer to rebind the notification listener when dots are re-enabled.
-        mSettingsCache = SettingsCache.INSTANCE.get(this);
-        mNotificationSettingsChangedListener = this::onNotificationSettingsChanged;
-        mSettingsCache.register(NOTIFICATION_BADGING_URI,
-                mNotificationSettingsChangedListener);
-        onNotificationSettingsChanged(mSettingsCache.getValue(NOTIFICATION_BADGING_URI));
+        mNotificationBadgingObserver = new SettingsObserver.Secure(getContentResolver()) {
+            @Override
+            public void onSettingChanged(boolean isNotificationBadgingEnabled) {
+                if (!isNotificationBadgingEnabled) {
+                    requestUnbind();
+                }
+            }
+        };
+        mNotificationBadgingObserver.register(NOTIFICATION_BADGING);
 
         onNotificationFullRefresh();
     }
 
-    private void onNotificationSettingsChanged(boolean areNotificationDotsEnabled) {
-        if (!areNotificationDotsEnabled && sIsConnected) {
-            requestUnbind();
-        }
-    }
-
     private void onNotificationFullRefresh() {
         mWorkerHandler.obtainMessage(MSG_NOTIFICATION_FULL_REFRESH).sendToTarget();
-        mNotificationManager.onNotificationFullRefresh();
     }
 
     @Override
     public void onListenerDisconnected() {
         super.onListenerDisconnected();
         sIsConnected = false;
-        mSettingsCache.unregister(NOTIFICATION_BADGING_URI, mNotificationSettingsChangedListener);
-        onNotificationFullRefresh();
+        if (mNotificationBadgingObserver != null) {
+            mNotificationBadgingObserver.unregister();
+        }
     }
 
     @Override
     public void onNotificationPosted(final StatusBarNotification sbn) {
-        if (sbn != null) {
-            mWorkerHandler.obtainMessage(MSG_NOTIFICATION_POSTED, sbn).sendToTarget();
-            mNotificationManager.onNotificationPosted(sbn);
+        super.onNotificationPosted(sbn);
+        if (sbn == null) {
+            // There is a bug in platform where we can get a null notification; just ignore it.
+            return;
+        }
+        mWorkerHandler.obtainMessage(MSG_NOTIFICATION_POSTED, new NotificationPostedMsg(sbn))
+            .sendToTarget();
+        if (sStatusBarNotificationsChangedListener != null) {
+            sStatusBarNotificationsChangedListener.onNotificationPosted(sbn);
+        }
+    }
+
+    /**
+     * An object containing data to send to MSG_NOTIFICATION_POSTED targets.
+     */
+    private class NotificationPostedMsg {
+        final PackageUserKey packageUserKey;
+        final NotificationKeyData notificationKey;
+        final boolean shouldBeFilteredOut;
+
+        NotificationPostedMsg(StatusBarNotification sbn) {
+            packageUserKey = PackageUserKey.fromNotification(sbn);
+            notificationKey = NotificationKeyData.fromNotification(sbn);
+            shouldBeFilteredOut = shouldBeFilteredOut(sbn);
         }
     }
 
     @Override
     public void onNotificationRemoved(final StatusBarNotification sbn) {
-        if (sbn != null) {
-            mWorkerHandler.obtainMessage(MSG_NOTIFICATION_REMOVED, sbn).sendToTarget();
-            mNotificationManager.onNotificationRemoved(sbn);
+        super.onNotificationRemoved(sbn);
+        if (sbn == null) {
+            // There is a bug in platform where we can get a null notification; just ignore it.
+            return;
         }
+        Pair<PackageUserKey, NotificationKeyData> packageUserKeyAndNotificationKey
+            = new Pair<>(PackageUserKey.fromNotification(sbn),
+            NotificationKeyData.fromNotification(sbn));
+        mWorkerHandler.obtainMessage(MSG_NOTIFICATION_REMOVED, packageUserKeyAndNotificationKey)
+            .sendToTarget();
+        if (sStatusBarNotificationsChangedListener != null) {
+            sStatusBarNotificationsChangedListener.onNotificationRemoved(sbn);
+        }
+
+        NotificationGroup notificationGroup = mNotificationGroupMap.get(sbn.getGroupKey());
+        String key = sbn.getKey();
+        if (notificationGroup != null) {
+            notificationGroup.removeChildKey(key);
+            if (notificationGroup.isEmpty()) {
+                if (key.equals(mLastKeyDismissedByLauncher)) {
+                    // Only cancel the group notification if launcher dismissed the last child.
+                    cancelNotification(notificationGroup.getGroupSummaryKey());
+                }
+                mNotificationGroupMap.remove(sbn.getGroupKey());
+            }
+        }
+        if (key.equals(mLastKeyDismissedByLauncher)) {
+            mLastKeyDismissedByLauncher = null;
+        }
+    }
+
+    public void cancelNotificationFromLauncher(String key) {
+        mLastKeyDismissedByLauncher = key;
+        cancelNotification(key);
     }
 
     @Override
     public void onNotificationRankingUpdate(RankingMap rankingMap) {
-        mWorkerHandler.obtainMessage(MSG_RANKING_UPDATE, rankingMap).sendToTarget();
+        super.onNotificationRankingUpdate(rankingMap);
+        String[] keys = rankingMap.getOrderedKeys();
+        for (StatusBarNotification sbn : getActiveNotifications(keys)) {
+            updateGroupKeyIfNecessary(sbn);
+        }
     }
 
-    /**
-     * Cancels a notification
-     */
-    @AnyThread
-    public void cancelNotificationFromLauncher(String key) {
-        mWorkerHandler.obtainMessage(MSG_CANCEL_NOTIFICATION, key).sendToTarget();
-    }
-
-    @WorkerThread
     private void updateGroupKeyIfNecessary(StatusBarNotification sbn) {
         String childKey = sbn.getKey();
         String oldGroupKey = mNotificationGroupKeyMap.get(childKey);
@@ -310,53 +333,76 @@ public class NotificationListener extends NotificationListenerService {
         }
     }
 
-    /**
-     * This makes a potentially expensive binder call and should be run on a background thread.
-     */
-    @WorkerThread
+    /** This makes a potentially expensive binder call and should be run on a background thread. */
     public List<StatusBarNotification> getNotificationsForKeys(List<NotificationKeyData> keys) {
-        StatusBarNotification[] notifications = getActiveNotifications(
-                keys.stream().map(n -> n.notificationKey).toArray(String[]::new));
-        return notifications == null ? Collections.emptyList() : Arrays.asList(notifications);
+        StatusBarNotification[] notifications = NotificationListener.this
+                .getActiveNotifications(NotificationKeyData.extractKeysOnly(keys)
+                        .toArray(new String[keys.size()]));
+        return notifications == null
+                ? Collections.<StatusBarNotification>emptyList() : Arrays.asList(notifications);
     }
 
     /**
-     * Returns true for notifications that have an intent and are not headers for grouped
-     * notifications and should be shown in the notification popup.
+     * Filter out notifications that don't have an intent
+     * or are headers for grouped notifications.
+     *
+     * @see #shouldBeFilteredOut(StatusBarNotification)
      */
-    @WorkerThread
-    private boolean notificationIsValidForUI(StatusBarNotification sbn) {
-        Notification notification = sbn.getNotification();
-        updateGroupKeyIfNecessary(sbn);
-
-        getCurrentRanking().getRanking(sbn.getKey(), mTempRanking);
-        if (!mTempRanking.canShowBadge()) {
-            return false;
-        }
-        if (mTempRanking.getChannel().getId().equals(NotificationChannel.DEFAULT_CHANNEL_ID)) {
-            // Special filtering for the default, legacy "Miscellaneous" channel.
-            if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) {
-                return false;
+    private List<StatusBarNotification> filterNotifications(
+            StatusBarNotification[] notifications) {
+        if (notifications == null) return null;
+        Set<Integer> removedNotifications = new ArraySet<>();
+        for (int i = 0; i < notifications.length; i++) {
+            if (shouldBeFilteredOut(notifications[i])) {
+                removedNotifications.add(i);
             }
+        }
+        List<StatusBarNotification> filteredNotifications = new ArrayList<>(
+                notifications.length - removedNotifications.size());
+        for (int i = 0; i < notifications.length; i++) {
+            if (!removedNotifications.contains(i)) {
+                filteredNotifications.add(notifications[i]);
+            }
+        }
+        return filteredNotifications;
+    }
+
+    private boolean shouldBeFilteredOut(StatusBarNotification sbn) {
+        Notification notification = sbn.getNotification();
+        if (Utilities.ATLEAST_OREO) {
+            updateGroupKeyIfNecessary(sbn);
+
+            getCurrentRanking().getRanking(sbn.getKey(), mTempRanking);
+            if (!mTempRanking.canShowBadge()) {
+                return true;
+            }
+            if (mTempRanking.getChannel().getId().equals(NotificationChannel.DEFAULT_CHANNEL_ID)) {
+                // Special filtering for the default, legacy "Miscellaneous" channel.
+                if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) {
+                    return true;
+                }
+            }
+        } else if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) {
+            return true;
         }
 
         CharSequence title = notification.extras.getCharSequence(Notification.EXTRA_TITLE);
         CharSequence text = notification.extras.getCharSequence(Notification.EXTRA_TEXT);
         boolean missingTitleAndText = TextUtils.isEmpty(title) && TextUtils.isEmpty(text);
         boolean isGroupHeader = (notification.flags & Notification.FLAG_GROUP_SUMMARY) != 0;
-        return !isGroupHeader && !missingTitleAndText;
-    }
-
-    private static Pair<PackageUserKey, NotificationKeyData> toKeyPair(StatusBarNotification sbn) {
-        return Pair.create(PackageUserKey.fromNotification(sbn),
-                NotificationKeyData.fromNotification(sbn));
+        return (isGroupHeader || missingTitleAndText);
     }
 
     public interface NotificationsChangedListener {
         void onNotificationPosted(PackageUserKey postedPackageUserKey,
-                NotificationKeyData notificationKey);
+                NotificationKeyData notificationKey, boolean shouldBeFilteredOut);
         void onNotificationRemoved(PackageUserKey removedPackageUserKey,
                 NotificationKeyData notificationKey);
         void onNotificationFullRefresh(List<StatusBarNotification> activeNotifications);
+    }
+
+    public interface StatusBarNotificationsChangedListener {
+        void onNotificationPosted(StatusBarNotification sbn);
+        void onNotificationRemoved(StatusBarNotification sbn);
     }
 }

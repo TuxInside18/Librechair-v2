@@ -1,243 +1,156 @@
 package com.android.launcher3.popup;
 
-import static com.android.launcher3.logging.StatsLogManager.LauncherEvent.LAUNCHER_SYSTEM_SHORTCUT_APP_INFO_TAP;
-import static com.android.launcher3.logging.StatsLogManager.LauncherEvent.LAUNCHER_SYSTEM_SHORTCUT_WIDGETS_TAP;
+import static com.android.launcher3.userevent.nano.LauncherLogProto.Action;
+import static com.android.launcher3.userevent.nano.LauncherLogProto.ControlType;
 
-import android.app.ActivityOptions;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
+import android.os.Bundle;
 import android.view.View;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.widget.ImageView;
-import android.widget.TextView;
-
-import androidx.annotation.Nullable;
-
+import ch.deletescape.lawnchair.LawnchairLauncher;
+import ch.deletescape.lawnchair.animations.LawnchairAppTransitionManagerImpl;
 import com.android.launcher3.AbstractFloatingView;
 import com.android.launcher3.BaseDraggingActivity;
+import com.android.launcher3.ItemInfo;
 import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAppTransitionManager;
 import com.android.launcher3.R;
+import com.android.launcher3.ShortcutInfo;
 import com.android.launcher3.Utilities;
 import com.android.launcher3.model.WidgetItem;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.WorkspaceItemInfo;
+import com.android.launcher3.shortcuts.DeepShortcutManager;
 import com.android.launcher3.util.InstantAppResolver;
 import com.android.launcher3.util.PackageManagerHelper;
 import com.android.launcher3.util.PackageUserKey;
-import com.android.launcher3.views.ActivityContext;
 import com.android.launcher3.widget.WidgetsBottomSheet;
-import com.patrykmichalik.opto.core.PreferenceExtensionsKt;
-
 import java.util.List;
 
-import app.lawnchair.preferences2.PreferenceManager2;
-
 /**
- * Represents a system shortcut for a given app. The shortcut should have a label and icon, and an
- * onClickListener that depends on the item that the shortcut services.
+ * Represents a system shortcut for a given app. The shortcut should have a static label and
+ * iconView, and an onClickListener that depends on the item that the shortcut services.
  *
  * Example system shortcuts, defined as inner classes, include Widgets and AppInfo.
- * @param <T>
  */
-public abstract class SystemShortcut<T extends Context & ActivityContext> extends ItemInfo
-        implements View.OnClickListener {
+public abstract class SystemShortcut<T extends BaseDraggingActivity> extends ItemInfo {
 
-    private final int mIconResId;
-    protected final int mLabelResId;
-    protected int mAccessibilityActionId;
+    public int iconResId;
+    public int labelResId;
 
-    protected final T mTarget;
-    protected final ItemInfo mItemInfo;
-
-    /**
-     * Indicates if it's invokable or not through some disabled UI
-     */
-    private boolean isEnabled = true;
-
-    public SystemShortcut(int iconResId, int labelResId, T target, ItemInfo itemInfo) {
-        mIconResId = iconResId;
-        mLabelResId = labelResId;
-        mAccessibilityActionId = labelResId;
-        mTarget = target;
-        mItemInfo = itemInfo;
+    public SystemShortcut(int iconResId, int labelResId) {
+        this.iconResId = iconResId;
+        this.labelResId = labelResId;
     }
 
-    public SystemShortcut(SystemShortcut<T> other) {
-        mIconResId = other.mIconResId;
-        mLabelResId = other.mLabelResId;
-        mAccessibilityActionId = other.mAccessibilityActionId;
-        mTarget = other.mTarget;
-        mItemInfo = other.mItemInfo;
-    }
+    public abstract View.OnClickListener getOnClickListener(T activity, ItemInfo itemInfo);
 
-    /**
-     * Should be in the left group of icons in app's context menu header.
-     */
-    public boolean isLeftGroup() {
-        return false;
-    }
+    public static class Custom extends SystemShortcut<Launcher> {
 
-    public void setIconAndLabelFor(View iconView, TextView labelView) {
-        iconView.setBackgroundResource(mIconResId);
-        labelView.setText(mLabelResId);
-    }
+        public Custom() {
+            super(R.drawable.ic_edit_no_shadow, R.string.action_preferences);
+        }
 
-    public void setIconAndContentDescriptionFor(ImageView view) {
-        view.setImageResource(mIconResId);
-        view.setContentDescription(view.getContext().getText(mLabelResId));
-    }
-
-    public AccessibilityNodeInfo.AccessibilityAction createAccessibilityAction(Context context) {
-        return new AccessibilityNodeInfo.AccessibilityAction(
-                mAccessibilityActionId, context.getText(mLabelResId));
-    }
-
-    public void setEnabled(boolean enabled) {
-        isEnabled = enabled;
-    }
-
-    public boolean isEnabled() {
-        return isEnabled;
-    }
-
-    public boolean hasHandlerForAction(int action) {
-        return mAccessibilityActionId == action;
-    }
-
-    public interface Factory<T extends Context & ActivityContext> {
-
-        @Nullable SystemShortcut<T> getShortcut(T activity, ItemInfo itemInfo);
-    }
-
-    public static final Factory<Launcher> WIDGETS = (launcher, itemInfo) -> {
-        if (PreferenceExtensionsKt.firstBlocking(PreferenceManager2.getInstance(launcher).getLockHomeScreen())) return null;
-        if (itemInfo.getTargetComponent() == null) return null;
-        final List<WidgetItem> widgets =
-                launcher.getPopupDataProvider().getWidgetsForPackageUser(new PackageUserKey(
-                        itemInfo.getTargetComponent().getPackageName(), itemInfo.user));
-        if (widgets.isEmpty()) {
+        @Override
+        public View.OnClickListener getOnClickListener(Launcher launcher, ItemInfo itemInfo) {
             return null;
         }
-        return new Widgets(launcher, itemInfo);
-    };
+    }
 
     public static class Widgets extends SystemShortcut<Launcher> {
-        public Widgets(Launcher target, ItemInfo itemInfo) {
-            super(R.drawable.ic_widget, R.string.widget_button_text, target, itemInfo);
+
+        public Widgets() {
+            super(R.drawable.ic_widget, R.string.widget_button_text);
         }
 
         @Override
-        public void onClick(View view) {
-            AbstractFloatingView.closeAllOpenViews(mTarget);
-            WidgetsBottomSheet widgetsBottomSheet =
-                    (WidgetsBottomSheet) mTarget.getLayoutInflater().inflate(
-                            R.layout.widgets_bottom_sheet, mTarget.getDragLayer(), false);
-            widgetsBottomSheet.populateAndShow(mItemInfo);
-            mTarget.getStatsLogManager().logger().withItemInfo(mItemInfo)
-                    .log(LAUNCHER_SYSTEM_SHORTCUT_WIDGETS_TAP);
-        }
-    }
-
-    public static final Factory<BaseDraggingActivity> APP_INFO = AppInfo::new;
-
-    public static class AppInfo<T extends Context & ActivityContext> extends SystemShortcut<T> {
-
-        @Nullable
-        private SplitAccessibilityInfo mSplitA11yInfo;
-
-        public AppInfo(T target, ItemInfo itemInfo) {
-            super(R.drawable.ic_info_no_shadow, R.string.app_info_drop_target_label, target,
-                    itemInfo);
-        }
-
-        /**
-         * Constructor used by overview for staged split to provide custom A11y information.
-         *
-         * Future improvements considerations:
-         * Have the logic in {@link #createAccessibilityAction(Context)} be moved to super
-         * call in {@link SystemShortcut#createAccessibilityAction(Context)} by having
-         * SystemShortcut be aware of TaskContainers and staged split.
-         * That way it could directly create the correct node info for any shortcut that supports
-         * split, but then we'll need custom resIDs for each pair of shortcuts.
-         */
-        public AppInfo(T target, ItemInfo itemInfo, SplitAccessibilityInfo accessibilityInfo) {
-            this(target, itemInfo);
-            mSplitA11yInfo = accessibilityInfo;
-            mAccessibilityActionId = accessibilityInfo.nodeId;
-        }
-
-        @Override
-        public AccessibilityNodeInfo.AccessibilityAction createAccessibilityAction(
-                Context context) {
-            if (mSplitA11yInfo != null && mSplitA11yInfo.containsMultipleTasks) {
-                String accessibilityLabel = context.getString(R.string.split_app_info_accessibility,
-                        mSplitA11yInfo.taskTitle);
-                return new AccessibilityNodeInfo.AccessibilityAction(mAccessibilityActionId,
-                        accessibilityLabel);
-            } else {
-                return super.createAccessibilityAction(context);
+        public View.OnClickListener getOnClickListener(final Launcher launcher,
+                final ItemInfo itemInfo) {
+            if (Utilities.getLawnchairPrefs(launcher).getLockDesktop()) {
+                return null;
             }
-        }
-
-        @Override
-        public void onClick(View view) {
-            dismissTaskMenuView(mTarget);
-            Rect sourceBounds = Utilities.getViewBounds(view);
-            new PackageManagerHelper(mTarget).startDetailsActivityForInfo(
-                    mItemInfo, sourceBounds, ActivityOptions.makeBasic().toBundle());
-            mTarget.getStatsLogManager().logger().withItemInfo(mItemInfo)
-                    .log(LAUNCHER_SYSTEM_SHORTCUT_APP_INFO_TAP);
-        }
-
-        public static class SplitAccessibilityInfo {
-            public final boolean containsMultipleTasks;
-            public final CharSequence taskTitle;
-            public final int nodeId;
-
-            public SplitAccessibilityInfo(boolean containsMultipleTasks,
-                    CharSequence taskTitle, int nodeId) {
-                this.containsMultipleTasks = containsMultipleTasks;
-                this.taskTitle = taskTitle;
-                this.nodeId = nodeId;
+            if (!DeepShortcutManager.supportsShortcuts(itemInfo)) {
+                return null;
             }
+            if (itemInfo.getTargetComponent() == null) {
+                return null;
+            }
+            final List<WidgetItem> widgets =
+                    launcher.getPopupDataProvider().getWidgetsForPackageUser(new PackageUserKey(
+                            itemInfo.getTargetComponent().getPackageName(), itemInfo.user));
+            if (widgets == null) {
+                return null;
+            }
+            return (view) -> {
+                AbstractFloatingView.closeAllOpenViews(launcher);
+                WidgetsBottomSheet widgetsBottomSheet =
+                        (WidgetsBottomSheet) launcher.getLayoutInflater().inflate(
+                                R.layout.widgets_bottom_sheet, launcher.getDragLayer(), false);
+                widgetsBottomSheet.populateAndShow(itemInfo);
+                launcher.getUserEventDispatcher().logActionOnControl(Action.Touch.TAP,
+                        ControlType.WIDGETS_BUTTON, view);
+            };
         }
     }
 
-    public static final Factory<BaseDraggingActivity> INSTALL = (activity, itemInfo) -> {
-        boolean supportsWebUI = (itemInfo instanceof WorkspaceItemInfo)
-                && ((WorkspaceItemInfo) itemInfo).hasStatusFlag(
-                        WorkspaceItemInfo.FLAG_SUPPORTS_WEB_UI);
-        boolean isInstantApp = false;
-        if (itemInfo instanceof com.android.launcher3.model.data.AppInfo) {
-            com.android.launcher3.model.data.AppInfo
-                    appInfo = (com.android.launcher3.model.data.AppInfo) itemInfo;
-            isInstantApp = InstantAppResolver.newInstance(activity).isInstantApp(appInfo);
-        }
-        boolean enabled = supportsWebUI || isInstantApp;
-        if (!enabled) {
-            return null;
-        }
-        return new Install(activity, itemInfo);
-    };
-
-    public static class Install extends SystemShortcut<BaseDraggingActivity> {
-
-        public Install(BaseDraggingActivity target, ItemInfo itemInfo) {
-            super(R.drawable.ic_install_no_shadow, R.string.install_drop_target_label,
-                    target, itemInfo);
+    public static class AppInfo extends SystemShortcut {
+        public AppInfo() {
+            super(R.drawable.ic_info_no_shadow, R.string.app_info_drop_target_label);
         }
 
         @Override
-        public void onClick(View view) {
-            Intent intent = new PackageManagerHelper(view.getContext()).getMarketIntent(
-                    mItemInfo.getTargetComponent().getPackageName());
-            mTarget.startActivitySafely(view, intent, mItemInfo);
-            AbstractFloatingView.closeAllOpenViews(mTarget);
+        public View.OnClickListener getOnClickListener(
+                BaseDraggingActivity activity, ItemInfo itemInfo) {
+            return (view) -> {
+                dismissTaskMenuView(activity);
+                Rect sourceBounds = activity.getViewBounds(view);
+                Bundle opts = activity.getActivityLaunchOptionsAsBundle(view);
+                Intent intent = new PackageManagerHelper(activity).startDetailsActivityForInfo(
+                        itemInfo, sourceBounds, opts);
+                if (intent != null && activity instanceof LawnchairLauncher) {
+                    LauncherAppTransitionManager manager =
+                            ((LawnchairLauncher) activity).getLauncherAppTransitionManager();
+                    ((LawnchairAppTransitionManagerImpl) manager).playLaunchAnimation(
+                            (Launcher) activity, null, intent);
+                }
+                activity.getUserEventDispatcher().logActionOnControl(Action.Touch.TAP,
+                        ControlType.APPINFO_TARGET, view);
+            };
         }
     }
 
-    public static <T extends Context & ActivityContext> void dismissTaskMenuView(T activity) {
+    public static class Install extends SystemShortcut {
+        public Install() {
+            super(R.drawable.ic_install_no_shadow, R.string.install_drop_target_label);
+        }
+
+        @Override
+        public View.OnClickListener getOnClickListener(
+                BaseDraggingActivity activity, ItemInfo itemInfo) {
+            boolean supportsWebUI = (itemInfo instanceof ShortcutInfo) &&
+                    ((ShortcutInfo) itemInfo).hasStatusFlag(ShortcutInfo.FLAG_SUPPORTS_WEB_UI);
+            boolean isInstantApp = false;
+            if (itemInfo instanceof com.android.launcher3.AppInfo) {
+                com.android.launcher3.AppInfo appInfo = (com.android.launcher3.AppInfo) itemInfo;
+                isInstantApp = InstantAppResolver.newInstance(activity).isInstantApp(appInfo);
+            }
+            boolean enabled = supportsWebUI || isInstantApp;
+            if (!enabled) {
+                return null;
+            }
+            return createOnClickListener(activity, itemInfo);
+        }
+
+        public View.OnClickListener createOnClickListener(
+                BaseDraggingActivity activity, ItemInfo itemInfo) {
+            return view -> {
+                Intent intent = new PackageManagerHelper(view.getContext()).getMarketIntent(
+                        itemInfo.getTargetComponent().getPackageName());
+                activity.startActivitySafely(view, intent, itemInfo);
+                AbstractFloatingView.closeAllOpenViews(activity);
+            };
+        }
+    }
+
+    protected static void dismissTaskMenuView(BaseDraggingActivity activity) {
         AbstractFloatingView.closeOpenViews(activity, true,
             AbstractFloatingView.TYPE_ALL & ~AbstractFloatingView.TYPE_REBIND_SAFE);
     }

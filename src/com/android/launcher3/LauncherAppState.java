@@ -12,187 +12,145 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * Modifications copyright 2021, Lawnchair
  */
 
 package com.android.launcher3;
 
-import static com.android.launcher3.Utilities.getDevicePrefs;
-import static com.android.launcher3.config.FeatureFlags.ENABLE_THEMED_ICONS;
-import static com.android.launcher3.util.Executors.MODEL_EXECUTOR;
-import static com.android.launcher3.util.SettingsCache.NOTIFICATION_BADGING_URI;
+import static ch.deletescape.lawnchair.settings.ui.SettingsActivity.NOTIFICATION_BADGING;
 
 import android.content.ComponentName;
+import android.content.ContentProviderClient;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
-import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
-import android.content.pm.LauncherApps;
-import android.os.UserHandle;
+import android.content.IntentFilter;
+import android.os.Looper;
 import android.util.Log;
-
-import androidx.annotation.Nullable;
-
+import ch.deletescape.lawnchair.LawnchairAppKt;
+import com.android.launcher3.compat.LauncherAppsCompat;
+import com.android.launcher3.compat.PackageInstallerCompat;
+import com.android.launcher3.compat.UserManagerCompat;
 import com.android.launcher3.config.FeatureFlags;
-import com.android.launcher3.graphics.IconShape;
-import com.android.launcher3.icons.IconCache;
-import com.android.launcher3.icons.IconProvider;
-import com.android.launcher3.icons.LauncherIcons;
 import com.android.launcher3.notification.NotificationListener;
-import com.android.launcher3.pm.InstallSessionHelper;
-import com.android.launcher3.pm.InstallSessionTracker;
-import com.android.launcher3.pm.UserCache;
-import com.android.launcher3.util.MainThreadInitializedObject;
+import com.android.launcher3.util.ConfigMonitor;
 import com.android.launcher3.util.Preconditions;
-import com.android.launcher3.util.RunnableList;
-import com.android.launcher3.util.SafeCloseable;
-import com.android.launcher3.util.SettingsCache;
-import com.android.launcher3.util.SimpleBroadcastReceiver;
-import com.android.launcher3.util.Themes;
-import com.android.launcher3.widget.custom.CustomWidgetManager;
+import com.android.launcher3.util.SettingsObserver;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 
-import app.lawnchair.LawnchairAppKt;
-import app.lawnchair.icons.LawnchairIconProvider;
-
-public class LauncherAppState implements SafeCloseable {
+public class LauncherAppState {
 
     public static final String ACTION_FORCE_ROLOAD = "force-reload-launcher";
-    private static final String KEY_ICON_STATE = "pref_icon_shape_path";
 
     // We do not need any synchronization for this variable as its only written on UI thread.
-    public static final MainThreadInitializedObject<LauncherAppState> INSTANCE =
-            new MainThreadInitializedObject<LauncherAppState>(LauncherAppState::new) {
-                @Override
-                protected void onPostInit(Context context) {
-                    super.onPostInit(context);
-                    LawnchairAppKt.getLawnchairApp(context).onLauncherAppStateCreated();
-                }
-            };
+    private static LauncherAppState INSTANCE;
 
-    private Launcher mLauncher;
     private final Context mContext;
     private final LauncherModel mModel;
-    private final IconProvider mIconProvider;
     private final IconCache mIconCache;
+    private final WidgetPreviewLoader mWidgetCache;
     private final InvariantDeviceProfile mInvariantDeviceProfile;
-    private final RunnableList mOnTerminateCallback = new RunnableList();
+    private final SettingsObserver mNotificationBadgingObserver;
+    private Launcher mLauncher;
 
     public static LauncherAppState getInstance(final Context context) {
-        return INSTANCE.get(context);
+        if (INSTANCE == null) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                INSTANCE = new LauncherAppState(context.getApplicationContext());
+                LawnchairAppKt.getLawnchairApp(context).onLauncherAppStateCreated();
+            } else {
+                try {
+                    return new MainThreadExecutor().submit(new Callable<LauncherAppState>() {
+                        @Override
+                        public LauncherAppState call() throws Exception {
+                            return LauncherAppState.getInstance(context);
+                        }
+                    }).get();
+                } catch (InterruptedException|ExecutionException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+        return INSTANCE;
     }
 
     public static LauncherAppState getInstanceNoCreate() {
-        return INSTANCE.getNoCreate();
+        return INSTANCE;
     }
 
     public Context getContext() {
         return mContext;
     }
 
-    public LauncherAppState(Context context) {
-        this(context, LauncherFiles.APP_ICONS_DB);
-        Log.v(Launcher.TAG, "LauncherAppState initiated");
+    private LauncherAppState(Context context) {
+        if (getLocalProvider(context) == null) {
+            throw new RuntimeException(
+                    "Initializing LauncherAppState in the absence of LauncherProvider");
+        }
+        Log.v(Launcher.TAG, "LauncherAppState initiated", new Throwable());
         Preconditions.assertUIThread();
-
-        mInvariantDeviceProfile.addOnChangeListener(modelPropertiesChanged -> {
-            if (modelPropertiesChanged) {
-                refreshAndReloadLauncher();
-            }
-        });
-
-        mContext.getSystemService(LauncherApps.class).registerCallback(mModel);
-
-        SimpleBroadcastReceiver modelChangeReceiver =
-                new SimpleBroadcastReceiver(mModel::onBroadcastIntent);
-        modelChangeReceiver.register(mContext, Intent.ACTION_LOCALE_CHANGED,
-                Intent.ACTION_MANAGED_PROFILE_AVAILABLE,
-                Intent.ACTION_MANAGED_PROFILE_UNAVAILABLE,
-                Intent.ACTION_MANAGED_PROFILE_UNLOCKED);
-        if (FeatureFlags.IS_STUDIO_BUILD) {
-            modelChangeReceiver.register(mContext, ACTION_FORCE_ROLOAD);
-        }
-        mOnTerminateCallback.add(() -> mContext.unregisterReceiver(modelChangeReceiver));
-
-        CustomWidgetManager.INSTANCE.get(mContext)
-                .setWidgetRefreshCallback(mModel::refreshAndBindWidgetsAndShortcuts);
-
-        SafeCloseable userChangeListener = UserCache.INSTANCE.get(mContext)
-                .addUserChangeListener(mModel::forceReload);
-        mOnTerminateCallback.add(userChangeListener::close);
-
-        IconObserver observer = new IconObserver();
-        SafeCloseable iconChangeTracker = mIconProvider.registerIconChangeListener(
-                observer, MODEL_EXECUTOR.getHandler());
-        mOnTerminateCallback.add(iconChangeTracker::close);
-        MODEL_EXECUTOR.execute(observer::verifyIconChanged);
-        if (ENABLE_THEMED_ICONS.get()) {
-            SharedPreferences prefs = Utilities.getPrefs(mContext);
-            prefs.registerOnSharedPreferenceChangeListener(observer);
-            mOnTerminateCallback.add(
-                    () -> prefs.unregisterOnSharedPreferenceChangeListener(observer));
-        }
-
-        InstallSessionTracker installSessionTracker =
-                InstallSessionHelper.INSTANCE.get(context).registerInstallTracker(mModel);
-        mOnTerminateCallback.add(installSessionTracker::unregister);
-
-        // Register an observer to rebind the notification listener when dots are re-enabled.
-        SettingsCache settingsCache = SettingsCache.INSTANCE.get(mContext);
-        SettingsCache.OnChangeListener notificationLister = this::onNotificationSettingsChanged;
-        settingsCache.register(NOTIFICATION_BADGING_URI, notificationLister);
-        onNotificationSettingsChanged(settingsCache.getValue(NOTIFICATION_BADGING_URI));
-        mOnTerminateCallback.add(() ->
-                settingsCache.unregister(NOTIFICATION_BADGING_URI, notificationLister));
-    }
-
-    public LauncherAppState(Context context, @Nullable String iconCacheFileName) {
         mContext = context;
 
-        mInvariantDeviceProfile = InvariantDeviceProfile.INSTANCE.get(context);
-        mIconProvider = new LawnchairIconProvider(context, Themes.isThemedIconEnabled(context));
-        mIconCache = new IconCache(mContext, mInvariantDeviceProfile,
-                iconCacheFileName, mIconProvider);
-        mModel = new LauncherModel(context, this, mIconCache, new AppFilter(mContext),
-                iconCacheFileName != null);
-        mOnTerminateCallback.add(mIconCache::close);
-    }
+        mInvariantDeviceProfile = new InvariantDeviceProfile(mContext);
+        mIconCache = new IconCache(mContext, mInvariantDeviceProfile);
+        mWidgetCache = new WidgetPreviewLoader(mContext, mIconCache);
+        mModel = new LauncherModel(this, mIconCache, AppFilter.newInstance(mContext));
 
-    private void onNotificationSettingsChanged(boolean areNotificationDotsEnabled) {
-        if (areNotificationDotsEnabled) {
-            NotificationListener.requestRebind(new ComponentName(
-                    mContext, NotificationListener.class));
+        LauncherAppsCompat.getInstance(mContext).addOnAppsChangedCallback(mModel);
+
+        // Register intent receivers
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_LOCALE_CHANGED);
+        // For handling managed profiles
+        filter.addAction(Intent.ACTION_MANAGED_PROFILE_ADDED);
+        filter.addAction(Intent.ACTION_MANAGED_PROFILE_REMOVED);
+        filter.addAction(Intent.ACTION_MANAGED_PROFILE_AVAILABLE);
+        filter.addAction(Intent.ACTION_MANAGED_PROFILE_UNAVAILABLE);
+        filter.addAction(Intent.ACTION_MANAGED_PROFILE_UNLOCKED);
+
+        if (FeatureFlags.IS_DOGFOOD_BUILD) {
+            filter.addAction(ACTION_FORCE_ROLOAD);
         }
-    }
 
-    public void reloadIcons() {
-        refreshAndReloadLauncher();
-    }
+        mContext.registerReceiver(mModel, filter);
+        UserManagerCompat.getInstance(mContext).enableAndResetCache();
+        new ConfigMonitor(mContext).register();
 
-    private void refreshAndReloadLauncher() {
-        LauncherIcons.clearPool();
-        mIconCache.updateIconParams(
-                mInvariantDeviceProfile.fillResIconDpi, mInvariantDeviceProfile.iconBitmapSize);
-        mModel.forceReload();
+        if (!mContext.getResources().getBoolean(R.bool.notification_badging_enabled)) {
+            mNotificationBadgingObserver = null;
+        } else {
+            // Register an observer to rebind the notification listener when badging is re-enabled.
+            mNotificationBadgingObserver = new SettingsObserver.Secure(
+                    mContext.getContentResolver()) {
+                @Override
+                public void onSettingChanged(boolean isNotificationBadgingEnabled) {
+                    if (isNotificationBadgingEnabled && Utilities.ATLEAST_NOUGAT) {
+                        NotificationListener.requestRebind(new ComponentName(
+                                mContext, NotificationListener.class));
+                    }
+                }
+            };
+            mNotificationBadgingObserver.register(NOTIFICATION_BADGING);
+        }
     }
 
     /**
      * Call from Application.onTerminate(), which is not guaranteed to ever be called.
      */
-    @Override
-    public void close() {
-        mModel.destroy();
-        mContext.getSystemService(LauncherApps.class).unregisterCallback(mModel);
-        CustomWidgetManager.INSTANCE.get(mContext).setWidgetRefreshCallback(null);
-        mOnTerminateCallback.executeAllAndDestroy();
+    public void onTerminate() {
+        mContext.unregisterReceiver(mModel);
+        final LauncherAppsCompat launcherApps = LauncherAppsCompat.getInstance(mContext);
+        launcherApps.removeOnAppsChangedCallback(mModel);
+        PackageInstallerCompat.getInstance(mContext).onStop();
+        if (mNotificationBadgingObserver != null) {
+            mNotificationBadgingObserver.unregister();
+        }
     }
 
-    public IconProvider getIconProvider() {
-        return mIconProvider;
-    }
-
-    public void setLauncher(Launcher launcher) {
+    LauncherModel setLauncher(Launcher launcher) {
         mLauncher = launcher;
+        getLocalProvider(mContext).setLauncherProviderChangeListener(launcher);
+        mModel.initialize(launcher);
+        return mModel;
     }
 
     public Launcher getLauncher() {
@@ -207,45 +165,44 @@ public class LauncherAppState implements SafeCloseable {
         return mModel;
     }
 
+    public WidgetPreviewLoader getWidgetCache() {
+        return mWidgetCache;
+    }
+
     public InvariantDeviceProfile getInvariantDeviceProfile() {
         return mInvariantDeviceProfile;
+    }
+
+    public void reloadIconCache() {
+        mIconCache.removeAllIcons();
+        mModel.forceReloadOnNextLaunch();
     }
 
     /**
      * Shorthand for {@link #getInvariantDeviceProfile()}
      */
     public static InvariantDeviceProfile getIDP(Context context) {
-        return InvariantDeviceProfile.INSTANCE.get(context);
+        return LauncherAppState.getInstance(context).getInvariantDeviceProfile();
     }
 
-    private class IconObserver
-            implements IconProvider.IconChangeListener, OnSharedPreferenceChangeListener {
-
-        @Override
-        public void onAppIconChanged(String packageName, UserHandle user) {
-            mModel.onAppIconChanged(packageName, user);
-        }
-
-        @Override
-        public void onSystemIconStateChanged(String iconState) {
-            IconShape.init(mContext);
-            refreshAndReloadLauncher();
-            getDevicePrefs(mContext).edit().putString(KEY_ICON_STATE, iconState).apply();
-        }
-
-        void verifyIconChanged() {
-            String iconState = mIconProvider.getSystemIconState();
-            if (!iconState.equals(getDevicePrefs(mContext).getString(KEY_ICON_STATE, ""))) {
-                onSystemIconStateChanged(iconState);
+    private static LauncherProvider getLocalProvider(Context context) {
+        ContentProviderClient cl = null;
+        try {
+            cl = context.getContentResolver()
+                    .acquireContentProviderClient(LauncherProvider.AUTHORITY);
+            return (LauncherProvider) cl.getLocalContentProvider();
+        } finally {
+            if (cl != null) {
+                cl.release();
             }
         }
+    }
 
-        @Override
-        public void onSharedPreferenceChanged(SharedPreferences prefs, String key) {
-            if (Themes.KEY_THEMED_ICONS.equals(key)) {
-                mIconProvider.setIconThemeSupported(Themes.isThemedIconEnabled(mContext));
-                verifyIconChanged();
-            }
+    public static void destroyInstance() {
+        LauncherAppState app = LauncherAppState.getInstanceNoCreate();
+        if (app != null) {
+            app.onTerminate();
+            INSTANCE = null;
         }
     }
 }

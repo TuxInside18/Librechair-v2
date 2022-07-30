@@ -16,15 +16,8 @@
 
 package com.android.launcher3;
 
-import static android.animation.ValueAnimator.areAnimatorsEnabled;
-
-import static com.android.launcher3.anim.Interpolators.DEACCEL_1_5;
-import static com.android.launcher3.dragndrop.DraggableView.DRAGGABLE_ICON;
-import static com.android.launcher3.icons.IconNormalizer.ICON_VISIBLE_AREA_FACTOR;
-
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
-import android.animation.ObjectAnimator;
 import android.animation.TimeInterpolator;
 import android.animation.ValueAnimator;
 import android.animation.ValueAnimator.AnimatorUpdateListener;
@@ -32,47 +25,45 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Point;
-import android.graphics.PointF;
 import android.graphics.Rect;
-import android.graphics.RectF;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Parcelable;
+import androidx.annotation.IntDef;
+import androidx.core.view.ViewCompat;
 import android.util.ArrayMap;
 import android.util.AttributeSet;
-import android.util.FloatProperty;
 import android.util.Log;
-import android.util.Property;
 import android.util.SparseArray;
+import android.util.TypedValue;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewDebug;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
 
-import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
-import androidx.core.graphics.ColorUtils;
-import androidx.core.view.ViewCompat;
-
+import ch.deletescape.lawnchair.LawnchairPreferences;
+import ch.deletescape.lawnchair.colors.ColorEngine.Resolvers;
 import com.android.launcher3.LauncherSettings.Favorites;
 import com.android.launcher3.accessibility.DragAndDropAccessibilityDelegate;
+import com.android.launcher3.accessibility.FolderAccessibilityHelper;
+import com.android.launcher3.accessibility.WorkspaceAccessibilityHelper;
 import com.android.launcher3.anim.Interpolators;
+import com.android.launcher3.anim.PropertyListBuilder;
 import com.android.launcher3.config.FeatureFlags;
-import com.android.launcher3.dragndrop.DraggableView;
 import com.android.launcher3.folder.PreviewBackground;
-import com.android.launcher3.model.data.ItemInfo;
+import com.android.launcher3.graphics.DragPreviewProvider;
 import com.android.launcher3.util.CellAndSpan;
 import com.android.launcher3.util.GridOccupancy;
 import com.android.launcher3.util.ParcelableSparseArray;
 import com.android.launcher3.util.Themes;
 import com.android.launcher3.util.Thunk;
-import com.android.launcher3.views.ActivityContext;
 import com.android.launcher3.widget.LauncherAppWidgetHostView;
-import com.patrykmichalik.opto.core.PreferenceExtensionsKt;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -82,23 +73,20 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Stack;
 
-import app.lawnchair.preferences2.PreferenceManager2;
-import app.lawnchair.theme.color.ColorTokens;
-import app.lawnchair.theme.drawable.DrawableTokens;
-
 public class CellLayout extends ViewGroup {
+    public static final int WORKSPACE_ACCESSIBILITY_DRAG = 2;
+    public static final int FOLDER_ACCESSIBILITY_DRAG = 1;
+
     private static final String TAG = "CellLayout";
     private static final boolean LOGD = false;
 
-    protected final ActivityContext mActivity;
+    private final Launcher mLauncher;
     @ViewDebug.ExportedProperty(category = "launcher")
     @Thunk int mCellWidth;
     @ViewDebug.ExportedProperty(category = "launcher")
     @Thunk int mCellHeight;
     private int mFixedCellWidth;
     private int mFixedCellHeight;
-    @ViewDebug.ExportedProperty(category = "launcher")
-    private final Point mBorderSpace;
 
     @ViewDebug.ExportedProperty(category = "launcher")
     private int mCountX;
@@ -111,14 +99,14 @@ public class CellLayout extends ViewGroup {
     // return an (x, y) value from helper functions. Do NOT use them to maintain other state.
     @Thunk final int[] mTmpPoint = new int[2];
     @Thunk final int[] mTempLocation = new int[2];
-    final PointF mTmpPointF = new PointF();
 
     private GridOccupancy mOccupied;
     private GridOccupancy mTmpOccupied;
 
     private OnTouchListener mInterceptTouchListener;
+    private final StylusEventHelper mStylusEventHelper;
 
-    private final ArrayList<DelegatedCellDrawing> mDelegatedCellDrawings = new ArrayList<>();
+    private final ArrayList<PreviewBackground> mFolderBackgrounds = new ArrayList<>();
     final PreviewBackground mFolderLeaveBehind = new PreviewBackground();
 
     private static final int[] BACKGROUND_STATE_ACTIVE = new int[] { android.R.attr.state_active };
@@ -134,7 +122,7 @@ public class CellLayout extends ViewGroup {
 
     // These arrays are used to implement the drag visualization on x-large screens.
     // They are used as circular arrays, indexed by mDragOutlineCurrent.
-    @Thunk final CellLayout.LayoutParams[] mDragOutlines = new CellLayout.LayoutParams[4];
+    @Thunk final Rect[] mDragOutlines = new Rect[4];
     @Thunk final float[] mDragOutlineAlphas = new float[mDragOutlines.length];
     private final InterruptibleInOutAnimator[] mDragOutlineAnims =
             new InterruptibleInOutAnimator[mDragOutlines.length];
@@ -144,25 +132,12 @@ public class CellLayout extends ViewGroup {
     private final Paint mDragOutlinePaint = new Paint();
 
     @Thunk final ArrayMap<LayoutParams, Animator> mReorderAnimators = new ArrayMap<>();
-    @Thunk final ArrayMap<Reorderable, ReorderPreviewAnimation> mShakeAnimators = new ArrayMap<>();
+    @Thunk final ArrayMap<View, ReorderPreviewAnimation> mShakeAnimators = new ArrayMap<>();
 
     private boolean mItemPlacementDirty = false;
 
-    // Used to visualize the grid and drop locations
-    private boolean mVisualizeCells = false;
-    private boolean mVisualizeDropLocation = true;
-    private RectF mVisualizeGridRect = new RectF();
-    private Paint mVisualizeGridPaint = new Paint();
-    private int mGridVisualizationPadding;
-    private int mGridVisualizationRoundingRadius;
-    private float mGridAlpha = 0f;
-    private int mGridColor = 0;
-    private float mSpringLoadedProgress = 0f;
-    private float mScrollProgress = 0f;
-
     // When a drag operation is in progress, holds the nearest cell to the touch point
     private final int[] mDragCell = new int[2];
-    private final int[] mDragCellSpan = new int[2];
 
     private boolean mDragging = false;
 
@@ -180,13 +155,15 @@ public class CellLayout extends ViewGroup {
 
     private final float mChildScale = 1f;
 
+    private final int mDockIconSize;
+    private final int mDockIconTextSize;
+
     public static final int MODE_SHOW_REORDER_HINT = 0;
     public static final int MODE_DRAG_OVER = 1;
     public static final int MODE_ON_DROP = 2;
     public static final int MODE_ON_DROP_EXTERNAL = 3;
     public static final int MODE_ACCEPT_DROP = 4;
     private static final boolean DESTRUCTIVE_REORDER = false;
-    private static final boolean DEBUG_VISUALIZE_OCCUPIED = false;
 
     private static final float REORDER_PREVIEW_MAGNITUDE = 0.12f;
     private static final int REORDER_ANIMATION_DURATION = 150;
@@ -195,33 +172,18 @@ public class CellLayout extends ViewGroup {
     private final ArrayList<View> mIntersectingViews = new ArrayList<>();
     private final Rect mOccupiedRect = new Rect();
     private final int[] mDirectionVector = new int[2];
-
     final int[] mPreviousReorderDirection = new int[2];
     private static final int INVALID_DIRECTION = -100;
 
     private final Rect mTempRect = new Rect();
-    private final RectF mTempRectF = new RectF();
-    private final float[] mTmpFloatArray = new float[4];
 
-    private static final Paint sPaint = new Paint();
+    private final static Paint sPaint = new Paint();
 
     // Related to accessible drag and drop
-    DragAndDropAccessibilityDelegate mTouchHelper;
+    private DragAndDropAccessibilityDelegate mTouchHelper;
+    private boolean mUseTouchHelper = false;
 
-    PreferenceManager2 mPreferenceManager2;
-
-    public static final FloatProperty<CellLayout> SPRING_LOADED_PROGRESS =
-            new FloatProperty<CellLayout>("spring_loaded_progress") {
-                @Override
-                public Float get(CellLayout cl) {
-                    return cl.getSpringLoadedProgress();
-                }
-
-                @Override
-                public void setValue(CellLayout cl, float progress) {
-                    cl.setSpringLoadedProgress(progress);
-                }
-            };
+    private final LawnchairPreferences mPrefs;
 
     public CellLayout(Context context) {
         this(context, null);
@@ -241,50 +203,44 @@ public class CellLayout extends ViewGroup {
         // the user where a dragged item will land when dropped.
         setWillNotDraw(false);
         setClipToPadding(false);
-        mActivity = ActivityContext.lookupContext(context);
-        DeviceProfile deviceProfile = mActivity.getDeviceProfile();
+        setClipChildren(false);
+        mLauncher = Launcher.getLauncher(context);
 
-        mPreferenceManager2 = PreferenceManager2.getInstance(context);
+        mPrefs = Utilities.getLawnchairPrefs(context);
 
-        mBorderSpace = mContainerType == FOLDER
-                ? new Point(deviceProfile.folderCellLayoutBorderSpacePx)
-                : new Point(deviceProfile.cellLayoutBorderSpacePx);
+        DeviceProfile grid = mLauncher.getDeviceProfile();
 
         mCellWidth = mCellHeight = -1;
         mFixedCellWidth = mFixedCellHeight = -1;
 
-        mCountX = deviceProfile.inv.numColumns;
-        mCountY = deviceProfile.inv.numRows;
+        mDockIconSize = grid.hotseatIconSizePx;
+        mDockIconTextSize = grid.hotseatIconTextSizePx;
+
+        mCountX = grid.inv.numColumns;
+        mCountY = grid.inv.numRows;
         mOccupied =  new GridOccupancy(mCountX, mCountY);
         mTmpOccupied = new GridOccupancy(mCountX, mCountY);
 
         mPreviousReorderDirection[0] = INVALID_DIRECTION;
         mPreviousReorderDirection[1] = INVALID_DIRECTION;
 
-        mFolderLeaveBehind.mDelegateCellX = -1;
-        mFolderLeaveBehind.mDelegateCellY = -1;
+        mFolderLeaveBehind.delegateCellX = -1;
+        mFolderLeaveBehind.delegateCellY = -1;
 
         setAlwaysDrawnWithCacheEnabled(false);
+        final Resources res = getResources();
 
-        Resources res = getResources();
-
-        mBackground = DrawableTokens.BgCellLayout.resolve(getContext());
+        mBackground = res.getDrawable(R.drawable.bg_celllayout);
         mBackground.setCallback(this);
         mBackground.setAlpha(0);
 
-        mGridColor = ColorTokens.WorkspaceAccentColor.resolveColor(getContext());
-        mGridVisualizationPadding =
-                res.getDimensionPixelSize(R.dimen.grid_visualization_cell_spacing);
-        mGridVisualizationRoundingRadius =
-                res.getDimensionPixelSize(R.dimen.grid_visualization_rounding_radius);
-        mReorderPreviewAnimationMagnitude = (REORDER_PREVIEW_MAGNITUDE * deviceProfile.iconSizePx);
+        mReorderPreviewAnimationMagnitude = (REORDER_PREVIEW_MAGNITUDE * grid.iconSizePx);
 
         // Initialize the data structures used for the drag visualization.
         mEaseOutInterpolator = Interpolators.DEACCEL_2_5; // Quint ease out
         mDragCell[0] = mDragCell[1] = -1;
-        mDragCellSpan[0] = mDragCellSpan[1] = -1;
         for (int i = 0; i < mDragOutlines.length; i++) {
-            mDragOutlines[i] = new CellLayout.LayoutParams(0, 0, 0, 0);
+            mDragOutlines[i] = new Rect(-1, -1, -1, -1);
         }
         mDragOutlinePaint.setColor(Themes.getAttrColor(context, R.attr.workspaceTextColor));
 
@@ -300,43 +256,70 @@ public class CellLayout extends ViewGroup {
 
         for (int i = 0; i < mDragOutlineAnims.length; i++) {
             final InterruptibleInOutAnimator anim =
-                new InterruptibleInOutAnimator(duration, fromAlphaValue, toAlphaValue);
+                new InterruptibleInOutAnimator(this, duration, fromAlphaValue, toAlphaValue);
             anim.getAnimator().setInterpolator(mEaseOutInterpolator);
             final int thisIndex = i;
             anim.getAnimator().addUpdateListener(new AnimatorUpdateListener() {
                 public void onAnimationUpdate(ValueAnimator animation) {
+                    final Bitmap outline = (Bitmap)anim.getTag();
+
                     // If an animation is started and then stopped very quickly, we can still
                     // get spurious updates we've cleared the tag. Guard against this.
-                    mDragOutlineAlphas[thisIndex] = (Float) animation.getAnimatedValue();
-                    CellLayout.this.invalidate();
+                    if (outline == null) {
+                        if (LOGD) {
+                            Object val = animation.getAnimatedValue();
+                            Log.d(TAG, "anim " + thisIndex + " update: " + val +
+                                     ", isStopped " + anim.isStopped());
+                        }
+                        // Try to prevent it from continuing to run
+                        animation.cancel();
+                    } else {
+                        mDragOutlineAlphas[thisIndex] = (Float) animation.getAnimatedValue();
+                        CellLayout.this.invalidate(mDragOutlines[thisIndex]);
+                    }
                 }
             });
             // The animation holds a reference to the drag outline bitmap as long is it's
             // running. This way the bitmap can be GCed when the animations are complete.
+            anim.getAnimator().addListener(new AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    if ((Float) ((ValueAnimator) animation).getAnimatedValue() == 0f) {
+                        anim.setTag(null);
+                    }
+                }
+            });
             mDragOutlineAnims[i] = anim;
         }
 
         mShortcutsAndWidgets = new ShortcutAndWidgetContainer(context, mContainerType);
-        mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY,
-                mBorderSpace);
+        mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY);
+
+        mStylusEventHelper = new StylusEventHelper(new SimpleOnStylusPressListener(this), this);
         addView(mShortcutsAndWidgets);
     }
 
-    /**
-     * Sets or clears a delegate used for accessible drag and drop
-     */
-    public void setDragAndDropAccessibilityDelegate(DragAndDropAccessibilityDelegate delegate) {
-        setOnClickListener(delegate);
-        ViewCompat.setAccessibilityDelegate(this, delegate);
+    public void enableAccessibleDrag(boolean enable, int dragType) {
+        mUseTouchHelper = enable;
+        if (!enable) {
+            ViewCompat.setAccessibilityDelegate(this, null);
+            setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+            getShortcutsAndWidgets().setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+            setOnClickListener(null);
+        } else {
+            if (dragType == WORKSPACE_ACCESSIBILITY_DRAG &&
+                    !(mTouchHelper instanceof WorkspaceAccessibilityHelper)) {
+                mTouchHelper = new WorkspaceAccessibilityHelper(this);
+            } else if (dragType == FOLDER_ACCESSIBILITY_DRAG &&
+                    !(mTouchHelper instanceof FolderAccessibilityHelper)) {
+                mTouchHelper = new FolderAccessibilityHelper(this);
+            }
+            ViewCompat.setAccessibilityDelegate(this, mTouchHelper);
+            setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
+            getShortcutsAndWidgets().setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
+            setOnClickListener(mTouchHelper);
+        }
 
-        mTouchHelper = delegate;
-        int accessibilityFlag = mTouchHelper != null
-                ? IMPORTANT_FOR_ACCESSIBILITY_YES : IMPORTANT_FOR_ACCESSIBILITY_NO;
-        setImportantForAccessibility(accessibilityFlag);
-        getShortcutsAndWidgets().setImportantForAccessibility(accessibilityFlag);
-
-        // ExploreByTouchHelper sets focusability. Clear it when the delegate is cleared.
-        setFocusable(delegate != null);
         // Invalidate the accessibility hierarchy
         if (getParent() != null) {
             getParent().notifySubtreeAccessibilityStateChanged(
@@ -344,17 +327,10 @@ public class CellLayout extends ViewGroup {
         }
     }
 
-    /**
-     * Returns the currently set accessibility delegate
-     */
-    public DragAndDropAccessibilityDelegate getDragAndDropAccessibilityDelegate() {
-        return mTouchHelper;
-    }
-
     @Override
     public boolean dispatchHoverEvent(MotionEvent event) {
         // Always attempt to dispatch hover events to accessibility first.
-        if (mTouchHelper != null && mTouchHelper.dispatchHoverEvent(event)) {
+        if (mUseTouchHelper && mTouchHelper.dispatchHoverEvent(event)) {
             return true;
         }
         return super.dispatchHoverEvent(event);
@@ -362,23 +338,35 @@ public class CellLayout extends ViewGroup {
 
     @Override
     public boolean onInterceptTouchEvent(MotionEvent ev) {
-        return mTouchHelper != null
-                || (mInterceptTouchListener != null && mInterceptTouchListener.onTouch(this, ev));
+        if (mUseTouchHelper ||
+                (mInterceptTouchListener != null && mInterceptTouchListener.onTouch(this, ev))) {
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent ev) {
+        boolean handled = super.onTouchEvent(ev);
+        // Stylus button press on a home screen should not switch between overview mode and
+        // the home screen mode, however, once in overview mode stylus button press should be
+        // enabled to allow rearranging the different home screens. So check what mode
+        // the workspace is in, and only perform stylus button presses while in overview mode.
+        if (mLauncher.isInState(LauncherState.OVERVIEW)
+                && mStylusEventHelper.onMotionEvent(ev)) {
+            return true;
+        }
+        return handled;
     }
 
     public void enableHardwareLayer(boolean hasLayer) {
         mShortcutsAndWidgets.setLayerType(hasLayer ? LAYER_TYPE_HARDWARE : LAYER_TYPE_NONE, sPaint);
     }
 
-    public boolean isHardwareLayerEnabled() {
-        return mShortcutsAndWidgets.getLayerType() == LAYER_TYPE_HARDWARE;
-    }
-
     public void setCellDimensions(int width, int height) {
         mFixedCellWidth = mCellWidth = width;
         mFixedCellHeight = mCellHeight = height;
-        mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY,
-                mBorderSpace);
+        mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY);
     }
 
     public void setGridSize(int x, int y) {
@@ -387,8 +375,7 @@ public class CellLayout extends ViewGroup {
         mOccupied = new GridOccupancy(mCountX, mCountY);
         mTmpOccupied = new GridOccupancy(mCountX, mCountY);
         mTempRectStack.clear();
-        mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY,
-                mBorderSpace);
+        mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY);
         requestLayout();
     }
 
@@ -451,182 +438,53 @@ public class CellLayout extends ViewGroup {
             mBackground.draw(canvas);
         }
 
-        if (DEBUG_VISUALIZE_OCCUPIED) {
-            Rect cellBounds = new Rect();
-            // Will contain the bounds of the cell including spacing between cells.
-            Rect cellBoundsWithSpacing = new Rect();
-            int[] targetCell = new int[2];
-            int[] cellCenter = new int[2];
-            Paint debugPaint = new Paint();
-            debugPaint.setStrokeWidth(Utilities.dpToPx(1));
-            for (int x = 0; x < mCountX; x++) {
-                for (int y = 0; y < mCountY; y++) {
-                    if (!mOccupied.cells[x][y]) {
-                        continue;
+        final Paint paint = mDragOutlinePaint;
+        for (int i = 0; i < mDragOutlines.length; i++) {
+            final float alpha = mDragOutlineAlphas[i];
+            if (alpha > 0) {
+                final Bitmap b = (Bitmap) mDragOutlineAnims[i].getTag();
+                paint.setAlpha((int)(alpha + .5f));
+                canvas.drawBitmap(b, null, mDragOutlines[i], paint);
+            }
+        }
+
+        // TODO: maybe we really shouldn't always query for this in onDraw
+        if (mPrefs.getVisualizeOccupied()) {
+            int[] pt = new int[2];
+            ColorDrawable cd = new ColorDrawable(Color.RED);
+            cd.setBounds(0, 0,  mCellWidth, mCellHeight);
+            for (int i = 0; i < mCountX; i++) {
+                for (int j = 0; j < mCountY; j++) {
+                    if (mOccupied.cells[i][j]) {
+                        cellToPoint(i, j, pt);
+                        canvas.save();
+                        canvas.translate(pt[0], pt[1]);
+                        cd.draw(canvas);
+                        canvas.restore();
                     }
-                    targetCell[0] = x;
-                    targetCell[1] = y;
-
-                    boolean canCreateFolder = canCreateFolder(getChildAt(x, y));
-                    cellToRect(x, y, 1, 1, cellBounds);
-                    cellBoundsWithSpacing.set(cellBounds);
-                    cellBoundsWithSpacing.inset(-mBorderSpace.x / 2, -mBorderSpace.y / 2);
-                    getWorkspaceCellVisualCenter(x, y, cellCenter);
-
-                    canvas.save();
-                    canvas.clipRect(cellBoundsWithSpacing);
-
-                    // Draw reorder drag target.
-                    debugPaint.setColor(Color.RED);
-                    canvas.drawCircle(cellCenter[0], cellCenter[1], getReorderRadius(targetCell),
-                            debugPaint);
-
-                    // Draw folder creation drag target.
-                    if (canCreateFolder) {
-                        debugPaint.setColor(Color.GREEN);
-                        canvas.drawCircle(cellCenter[0], cellCenter[1],
-                                getFolderCreationRadius(targetCell), debugPaint);
-                    }
-
-                    canvas.restore();
                 }
             }
         }
 
-        for (int i = 0; i < mDelegatedCellDrawings.size(); i++) {
-            DelegatedCellDrawing cellDrawing = mDelegatedCellDrawings.get(i);
-            cellToPoint(cellDrawing.mDelegateCellX, cellDrawing.mDelegateCellY, mTempLocation);
+        for (int i = 0; i < mFolderBackgrounds.size(); i++) {
+            PreviewBackground bg = mFolderBackgrounds.get(i);
+            cellToPoint(bg.delegateCellX, bg.delegateCellY, mTempLocation);
             canvas.save();
             canvas.translate(mTempLocation[0], mTempLocation[1]);
-            cellDrawing.drawUnderItem(canvas);
+            bg.drawBackground(canvas);
+            if (!bg.isClipping) {
+                bg.drawBackgroundStroke(canvas);
+            }
             canvas.restore();
         }
 
-        if (mFolderLeaveBehind.mDelegateCellX >= 0 && mFolderLeaveBehind.mDelegateCellY >= 0) {
-            cellToPoint(mFolderLeaveBehind.mDelegateCellX,
-                    mFolderLeaveBehind.mDelegateCellY, mTempLocation);
+        if (mFolderLeaveBehind.delegateCellX >= 0 && mFolderLeaveBehind.delegateCellY >= 0) {
+            cellToPoint(mFolderLeaveBehind.delegateCellX,
+                    mFolderLeaveBehind.delegateCellY, mTempLocation);
             canvas.save();
             canvas.translate(mTempLocation[0], mTempLocation[1]);
             mFolderLeaveBehind.drawLeaveBehind(canvas);
             canvas.restore();
-        }
-
-        if (mVisualizeCells || mVisualizeDropLocation) {
-            visualizeGrid(canvas);
-        }
-    }
-
-    /**
-     * Returns whether dropping an icon on the given View can create (or add to) a folder.
-     */
-    private boolean canCreateFolder(View child) {
-        return child instanceof DraggableView
-                && ((DraggableView) child).getViewType() == DRAGGABLE_ICON;
-    }
-
-    /**
-     * Indicates the progress of the Workspace entering the SpringLoaded state; allows the
-     * CellLayout to update various visuals for this state.
-     *
-     * @param progress
-     */
-    public void setSpringLoadedProgress(float progress) {
-        if (Float.compare(progress, mSpringLoadedProgress) != 0) {
-            mSpringLoadedProgress = progress;
-            updateBgAlpha();
-            setGridAlpha(progress);
-        }
-    }
-
-    /**
-     * See setSpringLoadedProgress
-     * @return progress
-     */
-    public float getSpringLoadedProgress() {
-        return mSpringLoadedProgress;
-    }
-
-    private void updateBgAlpha() {
-        mBackground.setAlpha((int) (mSpringLoadedProgress * 255));
-    }
-
-    /**
-     * Set the progress of this page's scroll
-     *
-     * @param progress 0 if the screen is centered, +/-1 if it is to the right / left respectively
-     */
-    public void setScrollProgress(float progress) {
-        if (Float.compare(Math.abs(progress), mScrollProgress) != 0) {
-            mScrollProgress = Math.abs(progress);
-            updateBgAlpha();
-        }
-    }
-
-    private void setGridAlpha(float gridAlpha) {
-        if (Float.compare(gridAlpha, mGridAlpha) != 0) {
-            mGridAlpha = gridAlpha;
-            invalidate();
-        }
-    }
-
-    protected void visualizeGrid(Canvas canvas) {
-        DeviceProfile dp = mActivity.getDeviceProfile();
-        int paddingX = (int) Math.min((mCellWidth - dp.iconSizePx) / 2, mGridVisualizationPadding);
-        int paddingY = (int) Math.min((mCellHeight - dp.iconSizePx) / 2, mGridVisualizationPadding);
-        mVisualizeGridRect.set(paddingX, paddingY,
-                mCellWidth - paddingX,
-                mCellHeight - paddingY);
-
-        mVisualizeGridPaint.setStrokeWidth(8);
-        int paintAlpha = (int) (120 * mGridAlpha);
-        mVisualizeGridPaint.setColor(ColorUtils.setAlphaComponent(mGridColor, paintAlpha));
-
-        if (mVisualizeCells) {
-            for (int i = 0; i < mCountX; i++) {
-                for (int j = 0; j < mCountY; j++) {
-                    int transX = i * mCellWidth + (i * mBorderSpace.x) + getPaddingLeft()
-                            + paddingX;
-                    int transY = j * mCellHeight + (j * mBorderSpace.y) + getPaddingTop()
-                            + paddingY;
-
-                    mVisualizeGridRect.offsetTo(transX, transY);
-                    mVisualizeGridPaint.setStyle(Paint.Style.FILL);
-                    canvas.drawRoundRect(mVisualizeGridRect, mGridVisualizationRoundingRadius,
-                            mGridVisualizationRoundingRadius, mVisualizeGridPaint);
-                }
-            }
-        }
-
-        if (mVisualizeDropLocation) {
-            for (int i = 0; i < mDragOutlines.length; i++) {
-                final float alpha = mDragOutlineAlphas[i];
-                if (alpha <= 0) continue;
-
-                mVisualizeGridPaint.setAlpha(255);
-                int x = mDragOutlines[i].cellX;
-                int y = mDragOutlines[i].cellY;
-                int spanX = mDragOutlines[i].cellHSpan;
-                int spanY = mDragOutlines[i].cellVSpan;
-
-                // TODO b/194414754 clean this up, reconcile with cellToRect
-                mVisualizeGridRect.set(paddingX, paddingY,
-                        mCellWidth * spanX + mBorderSpace.x * (spanX - 1) - paddingX,
-                        mCellHeight * spanY + mBorderSpace.y * (spanY - 1) - paddingY);
-
-                int transX = x * mCellWidth + (x * mBorderSpace.x)
-                        + getPaddingLeft() + paddingX;
-                int transY = y * mCellHeight + (y * mBorderSpace.y)
-                        + getPaddingTop() + paddingY;
-
-                mVisualizeGridRect.offsetTo(transX, transY);
-
-                mVisualizeGridPaint.setStyle(Paint.Style.STROKE);
-                mVisualizeGridPaint.setColor(Color.argb((int) (alpha),
-                        Color.red(mGridColor), Color.green(mGridColor), Color.blue(mGridColor)));
-
-                canvas.drawRoundRect(mVisualizeGridRect, mGridVisualizationRoundingRadius,
-                        mGridVisualizationRoundingRadius, mVisualizeGridPaint);
-            }
         }
     }
 
@@ -634,43 +492,38 @@ public class CellLayout extends ViewGroup {
     protected void dispatchDraw(Canvas canvas) {
         super.dispatchDraw(canvas);
 
-        for (int i = 0; i < mDelegatedCellDrawings.size(); i++) {
-            DelegatedCellDrawing bg = mDelegatedCellDrawings.get(i);
-            cellToPoint(bg.mDelegateCellX, bg.mDelegateCellY, mTempLocation);
-            canvas.save();
-            canvas.translate(mTempLocation[0], mTempLocation[1]);
-            bg.drawOverItem(canvas);
-            canvas.restore();
+        for (int i = 0; i < mFolderBackgrounds.size(); i++) {
+            PreviewBackground bg = mFolderBackgrounds.get(i);
+            if (bg.isClipping) {
+                cellToPoint(bg.delegateCellX, bg.delegateCellY, mTempLocation);
+                canvas.save();
+                canvas.translate(mTempLocation[0], mTempLocation[1]);
+                bg.drawBackgroundStroke(canvas);
+                canvas.restore();
+            }
         }
     }
 
-    /**
-     * Add Delegated cell drawing
-     */
-    public void addDelegatedCellDrawing(DelegatedCellDrawing bg) {
-        mDelegatedCellDrawings.add(bg);
+    public void addFolderBackground(PreviewBackground bg) {
+        mFolderBackgrounds.add(bg);
     }
-
-    /**
-     * Remove item from DelegatedCellDrawings
-     */
-    public void removeDelegatedCellDrawing(DelegatedCellDrawing bg) {
-        mDelegatedCellDrawings.remove(bg);
+    public void removeFolderBackground(PreviewBackground bg) {
+        mFolderBackgrounds.remove(bg);
     }
 
     public void setFolderLeaveBehindCell(int x, int y) {
         View child = getChildAt(x, y);
-        mFolderLeaveBehind.setup(getContext(), mActivity, null,
+        mFolderLeaveBehind.setup(mLauncher, null,
                 child.getMeasuredWidth(), child.getPaddingTop());
 
-        mFolderLeaveBehind.mDelegateCellX = x;
-        mFolderLeaveBehind.mDelegateCellY = y;
+        mFolderLeaveBehind.delegateCellX = x;
+        mFolderLeaveBehind.delegateCellY = y;
         invalidate();
     }
 
     public void clearFolderLeaveBehind() {
-        mFolderLeaveBehind.mDelegateCellX = -1;
-        mFolderLeaveBehind.mDelegateCellY = -1;
+        mFolderLeaveBehind.delegateCellX = -1;
+        mFolderLeaveBehind.delegateCellY = -1;
         invalidate();
     }
 
@@ -683,7 +536,7 @@ public class CellLayout extends ViewGroup {
         try {
             dispatchRestoreInstanceState(states);
         } catch (IllegalArgumentException ex) {
-            if (FeatureFlags.IS_STUDIO_BUILD) {
+            if (FeatureFlags.IS_DOGFOOD_BUILD) {
                 throw ex;
             }
             // Mismatched viewId / viewType preventing restore. Skip restore on production builds.
@@ -719,14 +572,25 @@ public class CellLayout extends ViewGroup {
         return mContainerType == WORKSPACE;
     }
 
+    public boolean isHotseat() {
+        return mContainerType == HOTSEAT;
+    }
+
     public boolean addViewToCellLayout(View child, int index, int childId, LayoutParams params,
             boolean markCells) {
         final LayoutParams lp = params;
 
-        // Hotseat icons - remove text
+        // Hotseat icons - apply customizations
         if (child instanceof BubbleTextView) {
             BubbleTextView bubbleChild = (BubbleTextView) child;
-            bubbleChild.setTextVisibility(mContainerType != HOTSEAT);
+            if (isHotseat()) {
+                bubbleChild.setTextVisibility(!mPrefs.getHideDockLabels());
+                bubbleChild.setIconSize(mDockIconSize);
+                bubbleChild.setLineCount(mPrefs.getDockLabelRows());
+                bubbleChild.setColorResolver(Resolvers.HOTSEAT_ICON_LABEL);
+                bubbleChild.setTextSize(TypedValue.COMPLEX_UNIT_PX, mDockIconTextSize);
+                // TODO: seperate font selection for dock
+            }
         }
 
         child.setScaleX(mChildScale);
@@ -744,7 +608,15 @@ public class CellLayout extends ViewGroup {
             if (LOGD) {
                 Log.d(TAG, "Adding view to ShortcutsAndWidgetsContainer: " + child);
             }
-            mShortcutsAndWidgets.addView(child, index, lp);
+            if (child.getParent() != null && child.getParent() instanceof ViewGroup) {
+                // This really shouldn't happen but apparently it does sometimes
+                ((ViewGroup) child.getParent()).removeView(child);
+            }
+            try {
+                mShortcutsAndWidgets.addView(child, index, lp);
+            } catch(NullPointerException e){
+                Log.e(TAG, "addViewToCellLayout (Get your shit together Huawei): ", e);
+            }
 
             if (markCells) markCellsAsOccupiedForView(child);
 
@@ -842,9 +714,11 @@ public class CellLayout extends ViewGroup {
      * @param result Array of 2 ints to hold the x and y coordinate of the point
      */
     void cellToPoint(int cellX, int cellY, int[] result) {
-        cellToRect(cellX, cellY, 1, 1, mTempRect);
-        result[0] = mTempRect.left;
-        result[1] = mTempRect.top;
+        final int hStartPadding = getPaddingLeft();
+        final int vStartPadding = getPaddingTop();
+
+        result[0] = hStartPadding + cellX * mCellWidth;
+        result[1] = vStartPadding + cellY * mCellHeight;
     }
 
     /**
@@ -860,7 +734,7 @@ public class CellLayout extends ViewGroup {
     }
 
     /**
-     * Given a cell coordinate and span return the point that represents the center of the region
+     * Given a cell coordinate and span return the point that represents the center of the regio
      *
      * @param cellX X coordinate of the cell
      * @param cellY Y coordinate of the cell
@@ -868,68 +742,30 @@ public class CellLayout extends ViewGroup {
      * @param result Array of 2 ints to hold the x and y coordinate of the point
      */
     void regionToCenterPoint(int cellX, int cellY, int spanX, int spanY, int[] result) {
-        cellToRect(cellX, cellY, spanX, spanY, mTempRect);
-        result[0] = mTempRect.centerX();
-        result[1] = mTempRect.centerY();
+        final int hStartPadding = getPaddingLeft();
+        final int vStartPadding = getPaddingTop();
+        result[0] = hStartPadding + cellX * mCellWidth + (spanX * mCellWidth) / 2;
+        result[1] = vStartPadding + cellY * mCellHeight + (spanY * mCellHeight) / 2;
     }
 
-    /**
-     * Returns the distance between the given coordinate and the visual center of the given cell.
+     /**
+     * Given a cell coordinate and span fills out a corresponding pixel rect
+     *
+     * @param cellX X coordinate of the cell
+     * @param cellY Y coordinate of the cell
+     * @param result Rect in which to write the result
      */
-    public float getDistanceFromWorkspaceCellVisualCenter(float x, float y, int[] cell) {
-        getWorkspaceCellVisualCenter(cell[0], cell[1], mTmpPoint);
+     void regionToRect(int cellX, int cellY, int spanX, int spanY, Rect result) {
+        final int hStartPadding = getPaddingLeft();
+        final int vStartPadding = getPaddingTop();
+        final int left = hStartPadding + cellX * mCellWidth;
+        final int top = vStartPadding + cellY * mCellHeight;
+        result.set(left, top, left + (spanX * mCellWidth), top + (spanY * mCellHeight));
+    }
+
+    public float getDistanceFromCell(float x, float y, int[] cell) {
+        cellToCenterPoint(cell[0], cell[1], mTmpPoint);
         return (float) Math.hypot(x - mTmpPoint[0], y - mTmpPoint[1]);
-    }
-
-    private void getWorkspaceCellVisualCenter(int cellX, int cellY, int[] outPoint) {
-        View child = getChildAt(cellX, cellY);
-        if (child instanceof DraggableView) {
-            DraggableView draggableChild = (DraggableView) child;
-            if (draggableChild.getViewType() == DRAGGABLE_ICON) {
-                cellToPoint(cellX, cellY, outPoint);
-                draggableChild.getWorkspaceVisualDragBounds(mTempRect);
-                mTempRect.offset(outPoint[0], outPoint[1]);
-                outPoint[0] = mTempRect.centerX();
-                outPoint[1] = mTempRect.centerY();
-                return;
-            }
-        }
-        cellToCenterPoint(cellX, cellY, outPoint);
-    }
-
-    /**
-     * Returns the max distance from the center of a cell that can accept a drop to create a folder.
-     */
-    public float getFolderCreationRadius(int[] targetCell) {
-        DeviceProfile grid = mActivity.getDeviceProfile();
-        float iconVisibleRadius = ICON_VISIBLE_AREA_FACTOR * grid.iconSizePx / 2;
-        // Halfway between reorder radius and icon.
-        return (getReorderRadius(targetCell) + iconVisibleRadius) / 2;
-    }
-
-    /**
-     * Returns the max distance from the center of a cell that will start to reorder on drag over.
-     */
-    public float getReorderRadius(int[] targetCell) {
-        int[] centerPoint = mTmpPoint;
-        getWorkspaceCellVisualCenter(targetCell[0], targetCell[1], centerPoint);
-
-        Rect cellBoundsWithSpacing = mTempRect;
-        cellToRect(targetCell[0], targetCell[1], 1, 1, cellBoundsWithSpacing);
-        cellBoundsWithSpacing.inset(-mBorderSpace.x / 2, -mBorderSpace.y / 2);
-
-        if (canCreateFolder(getChildAt(targetCell[0], targetCell[1]))) {
-            // Take only the circle in the smaller dimension, to ensure we don't start reordering
-            // too soon before accepting a folder drop.
-            int minRadius = centerPoint[0] - cellBoundsWithSpacing.left;
-            minRadius = Math.min(minRadius, centerPoint[1] - cellBoundsWithSpacing.top);
-            minRadius = Math.min(minRadius, cellBoundsWithSpacing.right - centerPoint[0]);
-            minRadius = Math.min(minRadius, cellBoundsWithSpacing.bottom - centerPoint[1]);
-            return minRadius;
-        }
-        // Take up the entire cell, including space between this cell and the adjacent ones.
-        return (float) Math.hypot(cellBoundsWithSpacing.width() / 2f,
-                cellBoundsWithSpacing.height() / 2f);
     }
 
     public int getCellWidth() {
@@ -953,17 +789,13 @@ public class CellLayout extends ViewGroup {
         int heightSize =  MeasureSpec.getSize(heightMeasureSpec);
         int childWidthSize = widthSize - (getPaddingLeft() + getPaddingRight());
         int childHeightSize = heightSize - (getPaddingTop() + getPaddingBottom());
-
         if (mFixedCellWidth < 0 || mFixedCellHeight < 0) {
-            int cw = DeviceProfile.calculateCellWidth(childWidthSize, mBorderSpace.x,
-                    mCountX);
-            int ch = DeviceProfile.calculateCellHeight(childHeightSize, mBorderSpace.y,
-                    mCountY);
+            int cw = DeviceProfile.calculateCellWidth(childWidthSize, mCountX);
+            int ch = DeviceProfile.calculateCellHeight(childHeightSize, mCountY);
             if (cw != mCellWidth || ch != mCellHeight) {
                 mCellWidth = cw;
                 mCellHeight = ch;
-                mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY,
-                        mBorderSpace);
+                mShortcutsAndWidgets.setCellDimensions(mCellWidth, mCellHeight, mCountX, mCountY);
             }
         }
 
@@ -999,6 +831,7 @@ public class CellLayout extends ViewGroup {
         int top = getPaddingTop();
         int bottom = b - t - getPaddingBottom();
 
+        mShortcutsAndWidgets.layout(left, top, right, bottom);
         // Expand the background drawing bounds by the padding baked into the background drawable
         mBackground.getPadding(mTempRect);
         mBackground.setBounds(
@@ -1006,18 +839,19 @@ public class CellLayout extends ViewGroup {
                 top - mTempRect.top - getPaddingTop(),
                 right + mTempRect.right + getPaddingRight(),
                 bottom + mTempRect.bottom + getPaddingBottom());
-
-        mShortcutsAndWidgets.layout(left, top, right, bottom);
     }
 
     /**
      * Returns the amount of space left over after subtracting padding and cells. This space will be
      * very small, a few pixels at most, and is a result of rounding down when calculating the cell
-     * width in {@link DeviceProfile#calculateCellWidth(int, int, int)}.
+     * width in {@link DeviceProfile#calculateCellWidth(int, int)}.
      */
     public int getUnusedHorizontalSpace() {
-        return getMeasuredWidth() - getPaddingLeft() - getPaddingRight() - (mCountX * mCellWidth)
-                - ((mCountX - 1) * mBorderSpace.x);
+        return getMeasuredWidth() - getPaddingLeft() - getPaddingRight() - (mCountX * mCellWidth);
+    }
+
+    public Drawable getScrimBackground() {
+        return mBackground;
     }
 
     @Override
@@ -1029,18 +863,17 @@ public class CellLayout extends ViewGroup {
         return mShortcutsAndWidgets;
     }
 
-    public View getChildAt(int cellX, int cellY) {
-        return mShortcutsAndWidgets.getChildAt(cellX, cellY);
+    public View getChildAt(int x, int y) {
+        return mShortcutsAndWidgets.getChildAt(x, y);
     }
 
     public boolean animateChildToPosition(final View child, int cellX, int cellY, int duration,
             int delay, boolean permanent, boolean adjustOccupied) {
         ShortcutAndWidgetContainer clc = getShortcutsAndWidgets();
 
-        if (clc.indexOfChild(child) != -1 && (child instanceof Reorderable)) {
+        if (clc.indexOfChild(child) != -1) {
             final LayoutParams lp = (LayoutParams) child.getLayoutParams();
             final ItemInfo info = (ItemInfo) child.getTag();
-            final Reorderable item = (Reorderable) child;
 
             // We cancel any existing animations
             if (mReorderAnimators.containsKey(lp)) {
@@ -1048,18 +881,13 @@ public class CellLayout extends ViewGroup {
                 mReorderAnimators.remove(lp);
             }
 
-
+            final int oldX = lp.x;
+            final int oldY = lp.y;
             if (adjustOccupied) {
                 GridOccupancy occupied = permanent ? mOccupied : mTmpOccupied;
                 occupied.markCells(lp.cellX, lp.cellY, lp.cellHSpan, lp.cellVSpan, false);
                 occupied.markCells(cellX, cellY, lp.cellHSpan, lp.cellVSpan, true);
             }
-
-            // Compute the new x and y position based on the new cellX and cellY
-            // We leverage the actual layout logic in the layout params and hence need to modify
-            // state and revert that state.
-            final int oldX = lp.x;
-            final int oldY = lp.y;
             lp.isLockedToGrid = true;
             if (permanent) {
                 lp.cellX = info.cellX = cellX;
@@ -1069,28 +897,20 @@ public class CellLayout extends ViewGroup {
                 lp.tmpCellY = cellY;
             }
             clc.setupLp(child);
+            lp.isLockedToGrid = false;
             final int newX = lp.x;
             final int newY = lp.y;
+
             lp.x = oldX;
             lp.y = oldY;
-            lp.isLockedToGrid = false;
-            // End compute new x and y
-
-            item.getReorderPreviewOffset(mTmpPointF);
-            final float initPreviewOffsetX = mTmpPointF.x;
-            final float initPreviewOffsetY = mTmpPointF.y;
-            final float finalPreviewOffsetX = newX - oldX;
-            final float finalPreviewOffsetY = newY - oldY;
-
 
             // Exit early if we're not actually moving the view
-            if (finalPreviewOffsetX == 0 && finalPreviewOffsetY == 0
-                    && initPreviewOffsetX == 0 && initPreviewOffsetY == 0) {
+            if (oldX == newX && oldY == newY) {
                 lp.isLockedToGrid = true;
                 return true;
             }
 
-            ValueAnimator va = ValueAnimator.ofFloat(0f, 1f);
+            ValueAnimator va = LauncherAnimUtils.ofFloat(0f, 1f);
             va.setDuration(duration);
             mReorderAnimators.put(lp, va);
 
@@ -1098,9 +918,9 @@ public class CellLayout extends ViewGroup {
                 @Override
                 public void onAnimationUpdate(ValueAnimator animation) {
                     float r = (Float) animation.getAnimatedValue();
-                    float x = (1 - r) * initPreviewOffsetX + r * finalPreviewOffsetX;
-                    float y = (1 - r) * initPreviewOffsetY + r * finalPreviewOffsetY;
-                    item.setReorderPreviewOffset(x, y);
+                    lp.x = (int) ((1 - r) * oldX + r * newX);
+                    lp.y = (int) ((1 - r) * oldY + r * newY);
+                    child.requestLayout();
                 }
             });
             va.addListener(new AnimatorListenerAdapter() {
@@ -1111,7 +931,6 @@ public class CellLayout extends ViewGroup {
                     // place just yet.
                     if (!cancelled) {
                         lp.isLockedToGrid = true;
-                        item.setReorderPreviewOffset(0, 0);
                         child.requestLayout();
                     }
                     if (mReorderAnimators.containsKey(lp)) {
@@ -1129,50 +948,79 @@ public class CellLayout extends ViewGroup {
         return false;
     }
 
-    void visualizeDropLocation(int cellX, int cellY, int spanX, int spanY,
-            DropTarget.DragObject dragObject) {
-        if (mDragCell[0] != cellX || mDragCell[1] != cellY || mDragCellSpan[0] != spanX
-                || mDragCellSpan[1] != spanY) {
+    void visualizeDropLocation(View v, DragPreviewProvider outlineProvider, int cellX, int cellY,
+            int spanX, int spanY, boolean resize, DropTarget.DragObject dragObject) {
+        final int oldDragCellX = mDragCell[0];
+        final int oldDragCellY = mDragCell[1];
+
+        if (outlineProvider == null || outlineProvider.generatedDragOutline == null) {
+            return;
+        }
+
+        Bitmap dragOutline = outlineProvider.generatedDragOutline;
+        if (cellX != oldDragCellX || cellY != oldDragCellY) {
+            Point dragOffset = dragObject.dragView.getDragVisualizeOffset();
+            Rect dragRegion = dragObject.dragView.getDragRegion();
+
             mDragCell[0] = cellX;
             mDragCell[1] = cellY;
-            mDragCellSpan[0] = spanX;
-            mDragCellSpan[1] = spanY;
-
-            // Apply color extraction on a widget when dragging.
-            applyColorExtractionOnWidget(dragObject, mDragCell, spanX, spanY);
 
             final int oldIndex = mDragOutlineCurrent;
             mDragOutlineAnims[oldIndex].animateOut();
             mDragOutlineCurrent = (oldIndex + 1) % mDragOutlines.length;
+            Rect r = mDragOutlines[mDragOutlineCurrent];
 
-            LayoutParams cell = mDragOutlines[mDragOutlineCurrent];
-            cell.cellX = cellX;
-            cell.cellY = cellY;
-            cell.cellHSpan = spanX;
-            cell.cellVSpan = spanY;
+            if (resize) {
+                cellToRect(cellX, cellY, spanX, spanY, r);
+                if (v instanceof LauncherAppWidgetHostView) {
+                    DeviceProfile profile = mLauncher.getDeviceProfile();
+                    Utilities.shrinkRect(r, profile.appWidgetScale.x, profile.appWidgetScale.y);
+                }
+            } else {
+                // Find the top left corner of the rect the object will occupy
+                final int[] topLeft = mTmpPoint;
+                cellToPoint(cellX, cellY, topLeft);
 
+                int left = topLeft[0];
+                int top = topLeft[1];
+
+                if (v != null && dragOffset == null) {
+                    // When drawing the drag outline, it did not account for margin offsets
+                    // added by the view's parent.
+                    MarginLayoutParams lp = (MarginLayoutParams) v.getLayoutParams();
+                    left += lp.leftMargin;
+                    top += lp.topMargin;
+
+                    // Offsets due to the size difference between the View and the dragOutline.
+                    // There is a size difference to account for the outer blur, which may lie
+                    // outside the bounds of the view.
+                    top += ((mCellHeight * spanY) - dragOutline.getHeight()) / 2;
+                    // We center about the x axis
+                    left += ((mCellWidth * spanX) - dragOutline.getWidth()) / 2;
+                } else {
+                    if (dragOffset != null && dragRegion != null) {
+                        // Center the drag region *horizontally* in the cell and apply a drag
+                        // outline offset
+                        left += dragOffset.x + ((mCellWidth * spanX) - dragRegion.width()) / 2;
+                        int cHeight = getShortcutsAndWidgets().getCellContentHeight();
+                        int cellPaddingY = (int) Math.max(0, ((mCellHeight - cHeight) / 2f));
+                        top += dragOffset.y + cellPaddingY;
+                    } else {
+                        // Center the drag outline in the cell
+                        left += ((mCellWidth * spanX) - dragOutline.getWidth()) / 2;
+                        top += ((mCellHeight * spanY) - dragOutline.getHeight()) / 2;
+                    }
+                }
+                r.set(left, top, left + dragOutline.getWidth(), top + dragOutline.getHeight());
+            }
+
+            Utilities.scaleRectAboutCenter(r, mChildScale);
+            mDragOutlineAnims[mDragOutlineCurrent].setTag(dragOutline);
             mDragOutlineAnims[mDragOutlineCurrent].animateIn();
-            invalidate();
 
             if (dragObject.stateAnnouncer != null) {
                 dragObject.stateAnnouncer.announce(getItemMoveDescription(cellX, cellY));
             }
-
-        }
-    }
-
-    /** Applies the local color extraction to a dragging widget object. */
-    private void applyColorExtractionOnWidget(DropTarget.DragObject dragObject, int[] targetCell,
-            int spanX, int spanY) {
-        // Apply local extracted color if the DragView is an AppWidgetHostViewDrawable.
-        View view = dragObject.dragView.getContentView();
-        if (view instanceof LauncherAppWidgetHostView) {
-            Launcher launcher = Launcher.getLauncher(getContext());
-            Workspace workspace = launcher.getWorkspace();
-            int screenId = workspace.getIdForScreen(this);
-            cellToRect(targetCell[0], targetCell[1], spanX, spanY, mTempRect);
-
-            ((LauncherAppWidgetHostView) view).handleDrag(mTempRect, this, screenId);
         }
     }
 
@@ -1883,7 +1731,7 @@ public class CellLayout extends ViewGroup {
         if (cellX < 0 || cellY < 0) return false;
 
         mIntersectingViews.clear();
-        if (PreferenceExtensionsKt.firstBlocking(mPreferenceManager2.getAllowWidgetOverlap())) {
+        if (mPrefs.getAllowOverlap()) {
             // let's pretend no intersections exist
             solution.intersectingViews = new ArrayList<>(mIntersectingViews);
             return true;
@@ -2056,7 +1904,7 @@ public class CellLayout extends ViewGroup {
 
     // This method starts or changes the reorder preview animations
     private void beginOrAdjustReorderPreviewAnimations(ItemConfiguration solution,
-            View dragView, int mode) {
+            View dragView, int delay, int mode) {
         int childCount = mShortcutsAndWidgets.getChildCount();
         for (int i = 0; i < childCount; i++) {
             View child = mShortcutsAndWidgets.getChildAt(i);
@@ -2065,33 +1913,19 @@ public class CellLayout extends ViewGroup {
             boolean skip = mode == ReorderPreviewAnimation.MODE_HINT && solution.intersectingViews
                     != null && !solution.intersectingViews.contains(child);
 
-
             LayoutParams lp = (LayoutParams) child.getLayoutParams();
-            if (c != null && !skip && (child instanceof Reorderable)) {
-                ReorderPreviewAnimation rha = new ReorderPreviewAnimation((Reorderable) child,
-                        mode, lp.cellX, lp.cellY, c.cellX, c.cellY, c.spanX, c.spanY);
+            if (c != null && !skip) {
+                ReorderPreviewAnimation rha = new ReorderPreviewAnimation(child, mode, lp.cellX,
+                        lp.cellY, c.cellX, c.cellY, c.spanX, c.spanY);
                 rha.animate();
             }
         }
     }
 
-    private static final Property<ReorderPreviewAnimation, Float> ANIMATION_PROGRESS =
-            new Property<ReorderPreviewAnimation, Float>(float.class, "animationProgress") {
-                @Override
-                public Float get(ReorderPreviewAnimation anim) {
-                    return anim.animationProgress;
-                }
-
-                @Override
-                public void set(ReorderPreviewAnimation anim, Float progress) {
-                    anim.setAnimationProgress(progress);
-                }
-            };
-
     // Class which represents the reorder preview animations. These animations show that an item is
     // in a temporary state, and hint at where the item will return to.
     class ReorderPreviewAnimation {
-        final Reorderable child;
+        final View child;
         float finalDeltaX;
         float finalDeltaY;
         float initDeltaX;
@@ -2108,11 +1942,10 @@ public class CellLayout extends ViewGroup {
         public static final int MODE_HINT = 0;
         public static final int MODE_PREVIEW = 1;
 
-        float animationProgress = 0;
-        ValueAnimator a;
+        Animator a;
 
-        public ReorderPreviewAnimation(Reorderable child, int mode, int cellX0, int cellY0,
-                int cellX1, int cellY1, int spanX, int spanY) {
+        public ReorderPreviewAnimation(View child, int mode, int cellX0, int cellY0, int cellX1,
+                int cellY1, int spanX, int spanY) {
             regionToCenterPoint(cellX0, cellY0, spanX, spanY, mTmpPoint);
             final int x0 = mTmpPoint[0];
             final int y0 = mTmpPoint[1];
@@ -2124,92 +1957,97 @@ public class CellLayout extends ViewGroup {
 
             this.child = child;
             this.mode = mode;
-            finalDeltaX = 0;
-            finalDeltaY = 0;
-
-            child.getReorderBounceOffset(mTmpPointF);
-            initDeltaX = mTmpPointF.x;
-            initDeltaY = mTmpPointF.y;
-            initScale = child.getReorderBounceScale();
-            finalScale = mChildScale - (CHILD_DIVIDEND / child.getView().getWidth()) * initScale;
-
+            setInitialAnimationValues(false);
+            finalScale = (mChildScale - (CHILD_DIVIDEND / child.getWidth())) * initScale;
+            finalDeltaX = initDeltaX;
+            finalDeltaY = initDeltaY;
             int dir = mode == MODE_HINT ? -1 : 1;
             if (dX == dY && dX == 0) {
             } else {
                 if (dY == 0) {
-                    finalDeltaX = -dir * Math.signum(dX) * mReorderPreviewAnimationMagnitude;
+                    finalDeltaX += - dir * Math.signum(dX) * mReorderPreviewAnimationMagnitude;
                 } else if (dX == 0) {
-                    finalDeltaY = -dir * Math.signum(dY) * mReorderPreviewAnimationMagnitude;
+                    finalDeltaY += - dir * Math.signum(dY) * mReorderPreviewAnimationMagnitude;
                 } else {
                     double angle = Math.atan( (float) (dY) / dX);
-                    finalDeltaX = (int) (-dir * Math.signum(dX)
-                            * Math.abs(Math.cos(angle) * mReorderPreviewAnimationMagnitude));
-                    finalDeltaY = (int) (-dir * Math.signum(dY)
-                            * Math.abs(Math.sin(angle) * mReorderPreviewAnimationMagnitude));
+                    finalDeltaX += (int) (- dir * Math.signum(dX) *
+                            Math.abs(Math.cos(angle) * mReorderPreviewAnimationMagnitude));
+                    finalDeltaY += (int) (- dir * Math.signum(dY) *
+                            Math.abs(Math.sin(angle) * mReorderPreviewAnimationMagnitude));
                 }
             }
         }
 
-        void setInitialAnimationValuesToBaseline() {
-            initScale = mChildScale;
-            initDeltaX = 0;
-            initDeltaY = 0;
+        void setInitialAnimationValues(boolean restoreOriginalValues) {
+            if (restoreOriginalValues) {
+                if (child instanceof LauncherAppWidgetHostView) {
+                    LauncherAppWidgetHostView lahv = (LauncherAppWidgetHostView) child;
+                    initScale = lahv.getScaleToFit();
+                    initDeltaX = lahv.getTranslationForCentering().x;
+                    initDeltaY = lahv.getTranslationForCentering().y;
+                } else {
+                    initScale = mChildScale;
+                    initDeltaX = 0;
+                    initDeltaY = 0;
+                }
+            } else {
+                initScale = child.getScaleX();
+                initDeltaX = child.getTranslationX();
+                initDeltaY = child.getTranslationY();
+            }
         }
 
         void animate() {
-            boolean noMovement = (finalDeltaX == 0) && (finalDeltaY == 0);
+            boolean noMovement = (finalDeltaX == initDeltaX) && (finalDeltaY == initDeltaY);
 
             if (mShakeAnimators.containsKey(child)) {
                 ReorderPreviewAnimation oldAnimation = mShakeAnimators.get(child);
+                oldAnimation.cancel();
                 mShakeAnimators.remove(child);
-
                 if (noMovement) {
-                    // A previous animation for this item exists, and no new animation will exist.
-                    // Finish the old animation smoothly.
-                    oldAnimation.finishAnimation();
+                    completeAnimationImmediately();
                     return;
-                } else {
-                    // A previous animation for this item exists, and a new one will exist. Stop
-                    // the old animation in its tracks, and proceed with the new one.
-                    oldAnimation.cancel();
                 }
             }
             if (noMovement) {
                 return;
             }
-
-            ValueAnimator va = ObjectAnimator.ofFloat(this, ANIMATION_PROGRESS, 0, 1);
+            ValueAnimator va = LauncherAnimUtils.ofFloat(0f, 1f);
             a = va;
 
             // Animations are disabled in power save mode, causing the repeated animation to jump
             // spastically between beginning and end states. Since this looks bad, we don't repeat
             // the animation in power save mode.
-            if (areAnimatorsEnabled()) {
+            if (!Utilities.isPowerSaverPreventingAnimation(getContext())) {
                 va.setRepeatMode(ValueAnimator.REVERSE);
                 va.setRepeatCount(ValueAnimator.INFINITE);
             }
 
             va.setDuration(mode == MODE_HINT ? HINT_DURATION : PREVIEW_DURATION);
             va.setStartDelay((int) (Math.random() * 60));
+            va.addUpdateListener(new AnimatorUpdateListener() {
+                @Override
+                public void onAnimationUpdate(ValueAnimator animation) {
+                    float r = (Float) animation.getAnimatedValue();
+                    float r1 = (mode == MODE_HINT && repeating) ? 1.0f : r;
+                    float x = r1 * finalDeltaX + (1 - r1) * initDeltaX;
+                    float y = r1 * finalDeltaY + (1 - r1) * initDeltaY;
+                    child.setTranslationX(x);
+                    child.setTranslationY(y);
+                    float s = r * finalScale + (1 - r) * initScale;
+                    child.setScaleX(s);
+                    child.setScaleY(s);
+                }
+            });
             va.addListener(new AnimatorListenerAdapter() {
                 public void onAnimationRepeat(Animator animation) {
                     // We make sure to end only after a full period
-                    setInitialAnimationValuesToBaseline();
+                    setInitialAnimationValues(true);
                     repeating = true;
                 }
             });
             mShakeAnimators.put(child, this);
             va.start();
-        }
-
-        private void setAnimationProgress(float progress) {
-            animationProgress = progress;
-            float r1 = (mode == MODE_HINT && repeating) ? 1.0f : animationProgress;
-            float x = r1 * finalDeltaX + (1 - r1) * initDeltaX;
-            float y = r1 * finalDeltaY + (1 - r1) * initDeltaY;
-            child.setReorderBounceOffset(x, y);
-            float s = animationProgress * finalScale + (1 - animationProgress) * initScale;
-            child.setReorderBounceScale(s);
         }
 
         private void cancel() {
@@ -2218,35 +2056,35 @@ public class CellLayout extends ViewGroup {
             }
         }
 
-        /**
-         * Smoothly returns the item to its baseline position / scale
-         */
-        @Thunk void finishAnimation() {
+        @Thunk void completeAnimationImmediately() {
             if (a != null) {
                 a.cancel();
             }
 
-            setInitialAnimationValuesToBaseline();
-            ValueAnimator va = ObjectAnimator.ofFloat(this, ANIMATION_PROGRESS,
-                    animationProgress, 0);
-            a = va;
-            a.setInterpolator(DEACCEL_1_5);
-            a.setDuration(REORDER_ANIMATION_DURATION);
+            setInitialAnimationValues(true);
+            a = LauncherAnimUtils.ofPropertyValuesHolder(child,
+                    new PropertyListBuilder()
+                            .scale(initScale)
+                            .translationX(initDeltaX)
+                            .translationY(initDeltaY)
+                            .build())
+                    .setDuration(REORDER_ANIMATION_DURATION);
+            a.setInterpolator(new android.view.animation.DecelerateInterpolator(1.5f));
             a.start();
         }
     }
 
     private void completeAndClearReorderPreviewAnimations() {
         for (ReorderPreviewAnimation a: mShakeAnimators.values()) {
-            a.finishAnimation();
+            a.completeAnimationImmediately();
         }
         mShakeAnimators.clear();
     }
 
-    private void commitTempPlacement(View dragView) {
+    private void commitTempPlacement() {
         mTmpOccupied.copyTo(mOccupied);
 
-        int screenId = Launcher.cast(mActivity).getWorkspace().getIdForScreen(this);
+        long screenId = mLauncher.getWorkspace().getIdForScreen(this);
         int container = Favorites.CONTAINER_DESKTOP;
 
         if (mContainerType == HOTSEAT) {
@@ -2261,7 +2099,7 @@ public class CellLayout extends ViewGroup {
             ItemInfo info = (ItemInfo) child.getTag();
             // We do a null check here because the item info can be null in the case of the
             // AllApps button in the hotseat.
-            if (info != null && child != dragView) {
+            if (info != null) {
                 final boolean requiresDbUpdate = (info.cellX != lp.tmpCellX
                         || info.cellY != lp.tmpCellY || info.spanX != lp.cellHSpan
                         || info.spanY != lp.cellVSpan);
@@ -2272,8 +2110,8 @@ public class CellLayout extends ViewGroup {
                 info.spanY = lp.cellVSpan;
 
                 if (requiresDbUpdate) {
-                    Launcher.cast(mActivity).getModelWriter().modifyItemInDatabase(info, container,
-                            screenId, info.cellX, info.cellY, info.spanX, info.spanY);
+                    mLauncher.getModelWriter().modifyItemInDatabase(info, container, screenId,
+                            info.cellX, info.cellY, info.spanX, info.spanY);
                 }
             }
         }
@@ -2316,13 +2154,11 @@ public class CellLayout extends ViewGroup {
     */
     private void getDirectionVectorForDrop(int dragViewCenterX, int dragViewCenterY, int spanX,
             int spanY, View dragView, int[] resultDirection) {
-
-        //TODO(adamcohen) b/151776141 use the items visual center for the direction vector
         int[] targetDestination = new int[2];
 
         findNearestArea(dragViewCenterX, dragViewCenterY, spanX, spanY, targetDestination);
         Rect dragRect = new Rect();
-        cellToRect(targetDestination[0], targetDestination[1], spanX, spanY, dragRect);
+        regionToRect(targetDestination[0], targetDestination[1], spanX, spanY, dragRect);
         dragRect.offset(dragViewCenterX - dragRect.centerX(), dragViewCenterY - dragRect.centerY());
 
         Rect dropRegionRect = new Rect();
@@ -2332,7 +2168,7 @@ public class CellLayout extends ViewGroup {
         int dropRegionSpanX = dropRegionRect.width();
         int dropRegionSpanY = dropRegionRect.height();
 
-        cellToRect(dropRegionRect.left, dropRegionRect.top, dropRegionRect.width(),
+        regionToRect(dropRegionRect.left, dropRegionRect.top, dropRegionRect.width(),
                 dropRegionRect.height(), dropRegionRect);
 
         int deltaX = (dropRegionRect.centerX() - dragViewCenterX) / spanX;
@@ -2423,16 +2259,16 @@ public class CellLayout extends ViewGroup {
             animateItemsToSolution(swapSolution, dragView, commit);
 
             if (commit) {
-                commitTempPlacement(null);
+                commitTempPlacement();
                 completeAndClearReorderPreviewAnimations();
                 setItemPlacementDirty(false);
             } else {
                 beginOrAdjustReorderPreviewAnimations(swapSolution, dragView,
-                        ReorderPreviewAnimation.MODE_PREVIEW);
+                        REORDER_ANIMATION_DURATION, ReorderPreviewAnimation.MODE_PREVIEW);
             }
             mShortcutsAndWidgets.requestLayout();
         }
-        return swapSolution.isSolution;
+        return swapSolution != null && swapSolution.isSolution;
     }
 
     int[] performReorder(int pixelX, int pixelY, int minSpanX, int minSpanY, int spanX, int spanY,
@@ -2482,7 +2318,7 @@ public class CellLayout extends ViewGroup {
 
         if (mode == MODE_SHOW_REORDER_HINT) {
             if (finalSolution != null) {
-                beginOrAdjustReorderPreviewAnimations(finalSolution, dragView,
+                beginOrAdjustReorderPreviewAnimations(finalSolution, dragView, 0,
                         ReorderPreviewAnimation.MODE_HINT);
                 result[0] = finalSolution.cellX;
                 result[1] = finalSolution.cellY;
@@ -2517,13 +2353,12 @@ public class CellLayout extends ViewGroup {
 
                 if (!DESTRUCTIVE_REORDER &&
                         (mode == MODE_ON_DROP || mode == MODE_ON_DROP_EXTERNAL)) {
-                    // Since the temp solution didn't update dragView, don't commit it either
-                    commitTempPlacement(dragView);
+                    commitTempPlacement();
                     completeAndClearReorderPreviewAnimations();
                     setItemPlacementDirty(false);
                 } else {
                     beginOrAdjustReorderPreviewAnimations(finalSolution, dragView,
-                            ReorderPreviewAnimation.MODE_PREVIEW);
+                            REORDER_ANIMATION_DURATION,  ReorderPreviewAnimation.MODE_PREVIEW);
                 }
             }
         } else {
@@ -2653,7 +2488,6 @@ public class CellLayout extends ViewGroup {
 
         // Invalidate the drag data
         mDragCell[0] = mDragCell[1] = -1;
-        mDragCellSpan[0] = mDragCellSpan[1] = -1;
         mDragOutlineAnims[mDragOutlineCurrent].animateOut();
         mDragOutlineCurrent = (mDragOutlineCurrent + 1) % mDragOutlineAnims.length;
         revertTempState();
@@ -2689,16 +2523,13 @@ public class CellLayout extends ViewGroup {
         final int cellWidth = mCellWidth;
         final int cellHeight = mCellHeight;
 
-        // We observe a shift of 1 pixel on the x coordinate compared to the actual cell coordinates
-        final int hStartPadding = getPaddingLeft()
-                + (int) Math.ceil(getUnusedHorizontalSpace() / 2f);
+        final int hStartPadding = getPaddingLeft();
         final int vStartPadding = getPaddingTop();
 
-        int x = hStartPadding + (cellX * mBorderSpace.x) + (cellX * cellWidth);
-        int y = vStartPadding + (cellY * mBorderSpace.y) + (cellY * cellHeight);
-
-        int width = cellHSpan * cellWidth + ((cellHSpan - 1) * mBorderSpace.x);
-        int height = cellVSpan * cellHeight + ((cellVSpan - 1) * mBorderSpace.y);
+        int width = cellHSpan * cellWidth;
+        int height = cellVSpan * cellHeight;
+        int x = hStartPadding + cellX * cellWidth;
+        int y = vStartPadding + cellY * cellHeight;
 
         resultRect.set(x, y, x + width, y + height);
     }
@@ -2716,18 +2547,16 @@ public class CellLayout extends ViewGroup {
     }
 
     public int getDesiredWidth() {
-        return getPaddingLeft() + getPaddingRight() + (mCountX * mCellWidth)
-                + ((mCountX - 1) * mBorderSpace.x);
+        return getPaddingLeft() + getPaddingRight() + (mCountX * mCellWidth);
     }
 
     public int getDesiredHeight()  {
-        return getPaddingTop() + getPaddingBottom() + (mCountY * mCellHeight)
-                + ((mCountY - 1) * mBorderSpace.y);
+        return getPaddingTop() + getPaddingBottom() + (mCountY * mCellHeight);
     }
 
     public boolean isOccupied(int x, int y) {
         if (x < mCountX && y < mCountY) {
-            return mOccupied.cells[x][y] && !PreferenceExtensionsKt.firstBlocking(mPreferenceManager2.getAllowWidgetOverlap());
+            return mOccupied.cells[x][y] && !mPrefs.getAllowOverlap();
         } else {
             throw new RuntimeException("Position exceeds the bound of this CellLayout");
         }
@@ -2837,22 +2666,19 @@ public class CellLayout extends ViewGroup {
             this.cellVSpan = cellVSpan;
         }
 
-        public void setup(int cellWidth, int cellHeight, boolean invertHorizontally, int colCount,
-                int rowCount, Point borderSpace, @Nullable Rect inset) {
-            setup(cellWidth, cellHeight, invertHorizontally, colCount, rowCount, 1.0f, 1.0f,
-                    borderSpace, inset);
+        public void setup(int cellWidth, int cellHeight, boolean invertHorizontally, int colCount) {
+            setup(cellWidth, cellHeight, invertHorizontally, colCount, 1.0f, 1.0f);
         }
 
         /**
-         * Use this method, as opposed to {@link #setup(int, int, boolean, int, int, Point, Rect)},
-         * if the view needs to be scaled.
+         * Use this method, as opposed to {@link #setup(int, int, boolean, int)}, if the view needs
+         * to be scaled.
          *
          * ie. In multi-window mode, we setup widgets so that they are measured and laid out
          * using their full/invariant device profile sizes.
          */
         public void setup(int cellWidth, int cellHeight, boolean invertHorizontally, int colCount,
-                int rowCount, float cellScaleX, float cellScaleY, Point borderSpace,
-                @Nullable Rect inset) {
+                float cellScaleX, float cellScaleY) {
             if (isLockedToGrid) {
                 final int myCellHSpan = cellHSpan;
                 final int myCellVSpan = cellVSpan;
@@ -2863,36 +2689,47 @@ public class CellLayout extends ViewGroup {
                     myCellX = colCount - myCellX - cellHSpan;
                 }
 
-                int hBorderSpacing = (myCellHSpan - 1) * borderSpace.x;
-                int vBorderSpacing = (myCellVSpan - 1) * borderSpace.y;
-
-                float myCellWidth = ((myCellHSpan * cellWidth) + hBorderSpacing) / cellScaleX;
-                float myCellHeight = ((myCellVSpan * cellHeight) + vBorderSpacing) / cellScaleY;
-
-                width = Math.round(myCellWidth) - leftMargin - rightMargin;
-                height = Math.round(myCellHeight) - topMargin - bottomMargin;
-                x = leftMargin + (myCellX * cellWidth) + (myCellX * borderSpace.x);
-                y = topMargin + (myCellY * cellHeight) + (myCellY * borderSpace.y);
-
-                if (inset != null) {
-                    x -= inset.left;
-                    y -= inset.top;
-                    width += inset.left + inset.right;
-                    height += inset.top + inset.bottom;
-                }
+                width = (int) (myCellHSpan * cellWidth / cellScaleX - leftMargin - rightMargin);
+                height = (int) (myCellVSpan * cellHeight / cellScaleY - topMargin - bottomMargin);
+                x = (myCellX * cellWidth + leftMargin);
+                y = (myCellY * cellHeight + topMargin);
             }
-        }
-
-        /**
-         * Sets the position to the provided point
-         */
-        public void setCellXY(Point point) {
-            cellX = point.x;
-            cellY = point.y;
         }
 
         public String toString() {
             return "(" + this.cellX + ", " + this.cellY + ")";
+        }
+
+        public void setWidth(int width) {
+            this.width = width;
+        }
+
+        public int getWidth() {
+            return width;
+        }
+
+        public void setHeight(int height) {
+            this.height = height;
+        }
+
+        public int getHeight() {
+            return height;
+        }
+
+        public void setX(int x) {
+            this.x = x;
+        }
+
+        public int getX() {
+            return x;
+        }
+
+        public void setY(int y) {
+            this.y = y;
+        }
+
+        public int getY() {
+            return y;
         }
     }
 
@@ -2904,8 +2741,8 @@ public class CellLayout extends ViewGroup {
     //    the CellLayout that was long clicked
     public static final class CellInfo extends CellAndSpan {
         public final View cell;
-        final int screenId;
-        final int container;
+        final long screenId;
+        final long container;
 
         public CellInfo(View v, ItemInfo info) {
             cellX = info.cellX;
@@ -2922,24 +2759,6 @@ public class CellLayout extends ViewGroup {
             return "Cell[view=" + (cell == null ? "null" : cell.getClass())
                     + ", x=" + cellX + ", y=" + cellY + "]";
         }
-    }
-
-    /**
-     * A Delegated cell Drawing for drawing on CellLayout
-     */
-    public abstract static class DelegatedCellDrawing {
-        public int mDelegateCellX;
-        public int mDelegateCellY;
-
-        /**
-         * Draw under CellLayout
-         */
-        public abstract void drawUnderItem(Canvas canvas);
-
-        /**
-         * Draw over CellLayout
-         */
-        public abstract void drawOverItem(Canvas canvas);
     }
 
     /**
@@ -2962,37 +2781,7 @@ public class CellLayout extends ViewGroup {
         return false;
     }
 
-    /**
-     * Finds solution to accept hotseat migration to cell layout. commits solution if commitConfig
-     */
-    public boolean makeSpaceForHotseatMigration(boolean commitConfig) {
-        int[] cellPoint = new int[2];
-        int[] directionVector = new int[]{0, -1};
-        cellToPoint(0, mCountY, cellPoint);
-        ItemConfiguration configuration = new ItemConfiguration();
-        if (findReorderSolution(cellPoint[0], cellPoint[1], mCountX, 1, mCountX, 1,
-                directionVector, null, false, configuration).isSolution) {
-            if (commitConfig) {
-                copySolutionToTempState(configuration, null);
-                commitTempPlacement(null);
-                // undo marking cells occupied since there is actually nothing being placed yet.
-                mOccupied.markCells(0, mCountY - 1, mCountX, 1, false);
-            }
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * returns a copy of cell layout's grid occupancy
-     */
-    public GridOccupancy cloneGridOccupancy() {
-        GridOccupancy occupancy = new GridOccupancy(mCountX, mCountY);
-        mOccupied.copyTo(occupancy);
-        return occupancy;
-    }
-
     public boolean isRegionVacant(int x, int y, int spanX, int spanY) {
-        return mOccupied.isRegionVacant(x, y, spanX, spanY) || PreferenceExtensionsKt.firstBlocking(mPreferenceManager2.getAllowWidgetOverlap());
+        return mOccupied.isRegionVacant(x, y, spanX, spanY) || mPrefs.getAllowOverlap();
     }
 }

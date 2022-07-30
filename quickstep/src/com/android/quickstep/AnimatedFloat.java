@@ -18,69 +18,42 @@ package com.android.quickstep;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
-import android.util.FloatProperty;
+import android.util.Property;
 
 /**
  * A mutable float which allows animating the value
  */
 public class AnimatedFloat {
 
-    public static final FloatProperty<AnimatedFloat> VALUE =
-            new FloatProperty<AnimatedFloat>("value") {
-                @Override
-                public void setValue(AnimatedFloat obj, float v) {
-                    obj.updateValue(v);
-                }
+    public static Property<AnimatedFloat, Float> VALUE = new Property<AnimatedFloat, Float>(Float.class, "value") {
+        @Override
+        public void set(AnimatedFloat object, Float value) {
+            object.updateValue(value);
+        }
 
-                @Override
-                public Float get(AnimatedFloat obj) {
-                    return obj.value;
-                }
-            };
-
-    private static final Runnable NO_OP = () -> { };
+        @Override
+        public Float get(AnimatedFloat animatedFloat) {
+            return animatedFloat.value;
+        }
+    };
 
     private final Runnable mUpdateCallback;
     private ObjectAnimator mValueAnimator;
-    // Only non-null when an animation is playing to this value.
-    private Float mEndValue;
 
     public float value;
-
-    public AnimatedFloat() {
-        this(NO_OP);
-    }
 
     public AnimatedFloat(Runnable updateCallback) {
         mUpdateCallback = updateCallback;
     }
 
-    /**
-     * Returns an animation from the current value to the given value.
-     */
-    public ObjectAnimator animateToValue(float end) {
-        return animateToValue(value, end);
-    }
-
-    /**
-     * Returns an animation from the given start value to the given end value.
-     */
     public ObjectAnimator animateToValue(float start, float end) {
         cancelAnimation();
         mValueAnimator = ObjectAnimator.ofFloat(this, VALUE, start, end);
         mValueAnimator.addListener(new AnimatorListenerAdapter() {
             @Override
-            public void onAnimationStart(Animator animator) {
-                if (mValueAnimator == animator) {
-                    mEndValue = end;
-                }
-            }
-
-            @Override
             public void onAnimationEnd(Animator animator) {
                 if (mValueAnimator == animator) {
                     mValueAnimator = null;
-                    mEndValue = null;
                 }
             }
         });
@@ -112,16 +85,5 @@ public class AnimatedFloat {
 
     public ObjectAnimator getCurrentAnimation() {
         return mValueAnimator;
-    }
-
-    public boolean isAnimating() {
-        return mValueAnimator != null;
-    }
-
-    /**
-     * Returns whether we are currently animating, and the animation's end value matches the given.
-     */
-    public boolean isAnimatingToValue(float endValue) {
-        return isAnimating() && mEndValue != null && mEndValue == endValue;
     }
 }

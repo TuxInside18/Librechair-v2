@@ -17,21 +17,27 @@
 package com.android.launcher3.accessibility;
 
 import android.content.Context;
+import android.graphics.Rect;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 import android.text.TextUtils;
 import android.view.View;
-
+import com.android.launcher3.AppInfo;
 import com.android.launcher3.CellLayout;
+import com.android.launcher3.FolderInfo;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.Launcher;
 import com.android.launcher3.R;
+import com.android.launcher3.ShortcutInfo;
 import com.android.launcher3.accessibility.LauncherAccessibilityDelegate.DragType;
-import com.android.launcher3.model.data.AppInfo;
-import com.android.launcher3.model.data.FolderInfo;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.WorkspaceItemInfo;
+import com.android.launcher3.dragndrop.DragLayer;
 
 /**
  * Implementation of {@link DragAndDropAccessibilityDelegate} to support DnD on workspace.
  */
 public class WorkspaceAccessibilityHelper extends DragAndDropAccessibilityDelegate {
+
+    private final Rect mTempRect = new Rect();
+    private final int[] mTempCords = new int[2];
 
     public WorkspaceAccessibilityHelper(CellLayout layout) {
         super(layout);
@@ -39,7 +45,7 @@ public class WorkspaceAccessibilityHelper extends DragAndDropAccessibilityDelega
 
     /**
      * Find the virtual view id corresponding to the top left corner of any drop region by which
-     * the passed id is contained. For an icon, this is simply
+     * the passed id is contained. For an iconView, this is simply
      */
     @Override
     protected int intersectsValidDropTarget(int id) {
@@ -89,16 +95,16 @@ public class WorkspaceAccessibilityHelper extends DragAndDropAccessibilityDelega
             }
             return INVALID_POSITION;
         } else {
-            // For an icon, we simply check the view directly below
+            // For an iconView, we simply check the view directly below
             View child = mView.getChildAt(x, y);
             if (child == null || child == dragInfo.item) {
-                // Empty cell. Good for an icon or folder.
+                // Empty cell. Good for an iconView or folder.
                 return id;
             } else if (dragInfo.dragType != DragType.FOLDER) {
-                // For icons, we can consider cells that have another icon or a folder.
+                // For icons, we can consider cells that have another iconView or a folder.
                 ItemInfo info = (ItemInfo) child.getTag();
                 if (info instanceof AppInfo || info instanceof FolderInfo ||
-                        info instanceof WorkspaceItemInfo) {
+                        info instanceof ShortcutInfo) {
                     return id;
                 }
             }
@@ -117,7 +123,7 @@ public class WorkspaceAccessibilityHelper extends DragAndDropAccessibilityDelega
             return mContext.getString(R.string.item_moved);
         } else {
             ItemInfo info = (ItemInfo) child.getTag();
-            if (info instanceof AppInfo || info instanceof WorkspaceItemInfo) {
+            if (info instanceof AppInfo || info instanceof ShortcutInfo) {
                 return mContext.getString(R.string.folder_created);
 
             } else if (info instanceof FolderInfo) {
@@ -126,6 +132,26 @@ public class WorkspaceAccessibilityHelper extends DragAndDropAccessibilityDelega
         }
         return "";
     }
+
+    @Override
+    protected void onPopulateNodeForVirtualView(int id, AccessibilityNodeInfoCompat node) {
+        super.onPopulateNodeForVirtualView(id, node);
+
+
+        // ExploreByTouchHelper does not currently handle view scale.
+        // Update BoundsInScreen to appropriate value.
+        DragLayer dragLayer = Launcher.getLauncher(mView.getContext()).getDragLayer();
+        mTempCords[0] = mTempCords[1] = 0;
+        float scale = dragLayer.getDescendantCoordRelativeToSelf(mView, mTempCords);
+
+        node.getBoundsInParent(mTempRect);
+        mTempRect.left = mTempCords[0] + (int) (mTempRect.left * scale);
+        mTempRect.right = mTempCords[0] + (int) (mTempRect.right * scale);
+        mTempRect.top = mTempCords[1] + (int) (mTempRect.top * scale);
+        mTempRect.bottom = mTempCords[1] + (int) (mTempRect.bottom * scale);
+        node.setBoundsInScreen(mTempRect);
+    }
+
     @Override
     protected String getLocationDescriptionForIconDrop(int id) {
         int x = id % mView.getCountX();
@@ -142,14 +168,14 @@ public class WorkspaceAccessibilityHelper extends DragAndDropAccessibilityDelega
 
     public static String getDescriptionForDropOver(View overChild, Context context) {
         ItemInfo info = (ItemInfo) overChild.getTag();
-        if (info instanceof WorkspaceItemInfo) {
+        if (info instanceof ShortcutInfo) {
             return context.getString(R.string.create_folder_with, info.title);
         } else if (info instanceof FolderInfo) {
             if (TextUtils.isEmpty(info.title)) {
                 // Find the first item in the folder.
                 FolderInfo folder = (FolderInfo) info;
-                WorkspaceItemInfo firstItem = null;
-                for (WorkspaceItemInfo shortcut : folder.contents) {
+                ShortcutInfo firstItem = null;
+                for (ShortcutInfo shortcut : folder.contents) {
                     if (firstItem == null || firstItem.rank > shortcut.rank) {
                         firstItem = shortcut;
                     }

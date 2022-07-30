@@ -16,33 +16,54 @@
 package com.android.quickstep.util;
 
 import android.animation.AnimatorSet;
+import android.app.ActivityOptions;
+import android.os.Handler;
 
+import com.android.launcher3.LauncherAnimationRunner;
+import com.android.systemui.shared.system.ActivityOptionsCompat;
+import com.android.systemui.shared.system.RemoteAnimationAdapterCompat;
 import com.android.systemui.shared.system.RemoteAnimationTargetCompat;
+import com.android.systemui.shared.system.TransactionCompat;
 
-public abstract class RemoteAnimationProvider {
+@FunctionalInterface
+public interface RemoteAnimationProvider {
 
-    public abstract AnimatorSet createWindowAnimation(RemoteAnimationTargetCompat[] appTargets,
-            RemoteAnimationTargetCompat[] wallpaperTargets);
+    static final int Z_BOOST_BASE = 800570000;
+
+    AnimatorSet createWindowAnimation(RemoteAnimationTargetCompat[] targets);
+
+    default ActivityOptions toActivityOptions(Handler handler, long duration) {
+        LauncherAnimationRunner runner = new LauncherAnimationRunner(handler,
+                false /* startAtFrontOfQueue */) {
+
+            @Override
+            public void onCreateAnimation(RemoteAnimationTargetCompat[] targetCompats,
+                    AnimationResult result) {
+                result.setAnimation(createWindowAnimation(targetCompats));
+            }
+        };
+        return ActivityOptionsCompat.makeRemoteAnimation(
+                new RemoteAnimationAdapterCompat(runner, duration, 0));
+    }
 
     /**
-     * @return the target with the lowest opaque layer for a certain app animation, or null.
+     * Prepares the given {@param targets} for a remote animation, and should be called with the
+     * transaction from the first frame of animation.
+     *
+     * @param boostModeTargets The mode indicating which targets to boost in z-order above other
+     *                         targets.
      */
-    public static RemoteAnimationTargetCompat findLowestOpaqueLayerTarget(
-            RemoteAnimationTargetCompat[] appTargets, int mode) {
-        int lowestLayer = Integer.MAX_VALUE;
-        int lowestLayerIndex = -1;
-        for (int i = appTargets.length - 1; i >= 0; i--) {
-            RemoteAnimationTargetCompat target = appTargets[i];
-            if (target.mode == mode && !target.isTranslucent) {
-                int layer = target.prefixOrderIndex;
-                if (layer < lowestLayer) {
-                    lowestLayer = layer;
-                    lowestLayerIndex = i;
-                }
-            }
+    static void prepareTargetsForFirstFrame(RemoteAnimationTargetCompat[] targets,
+            TransactionCompat t, int boostModeTargets) {
+        for (RemoteAnimationTargetCompat target : targets) {
+            t.setLayer(target.leash, getLayer(target, boostModeTargets));
+            t.show(target.leash);
         }
-        return lowestLayerIndex != -1
-                ? appTargets[lowestLayerIndex]
-                : null;
+    }
+
+    static int getLayer(RemoteAnimationTargetCompat target, int boostModeTarget) {
+        return target.mode == boostModeTarget
+                ? Z_BOOST_BASE + target.prefixOrderIndex
+                : target.prefixOrderIndex;
     }
 }

@@ -19,95 +19,62 @@ import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Point;
 import android.graphics.Rect;
-import android.util.ArrayMap;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.recyclerview.widget.RecyclerView;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.Interpolator;
 import android.widget.LinearLayout;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.recyclerview.widget.RecyclerView;
-
-import com.android.launcher3.BaseDraggingActivity;
-import com.android.launcher3.DeviceProfile;
-import com.android.launcher3.Insettable;
 import com.android.launcher3.R;
-import com.android.launcher3.config.FeatureFlags;
-import com.android.launcher3.uioverrides.plugins.PluginManagerWrapper;
-import com.android.systemui.plugins.AllAppsRow;
-import com.android.systemui.plugins.AllAppsRow.OnHeightUpdatedListener;
-import com.android.systemui.plugins.PluginListener;
-
+import com.android.launcher3.allapps.AllAppsContainerView.AdapterHolder;
+import com.android.launcher3.anim.PropertySetter;
 import java.util.ArrayList;
-import java.util.Map;
 
 public class FloatingHeaderView extends LinearLayout implements
-        ValueAnimator.AnimatorUpdateListener, PluginListener<AllAppsRow>, Insettable,
-        OnHeightUpdatedListener {
+        ValueAnimator.AnimatorUpdateListener {
 
-    private final Rect mRVClip = new Rect(0, 0, Integer.MAX_VALUE, Integer.MAX_VALUE);
-    private final Rect mHeaderClip = new Rect(0, 0, Integer.MAX_VALUE, Integer.MAX_VALUE);
+    private final Rect mClip = new Rect(0, 0, Integer.MAX_VALUE, Integer.MAX_VALUE);
     private final ValueAnimator mAnimator = ValueAnimator.ofInt(0, 0);
     private final Point mTempOffset = new Point();
-    private final RecyclerView.OnScrollListener mOnScrollListener =
-            new RecyclerView.OnScrollListener() {
-                @Override
-                public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
-                }
+    private final RecyclerView.OnScrollListener mOnScrollListener = new RecyclerView.OnScrollListener() {
+        @Override
+        public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
+        }
 
-                @Override
-                public void onScrolled(RecyclerView rv, int dx, int dy) {
-                    if (rv != mCurrentRV) {
-                        return;
-                    }
+        @Override
+        public void onScrolled(RecyclerView rv, int dx, int dy) {
+            if (rv != mCurrentRV) {
+                return;
+            }
 
-                    if (mAnimator.isStarted()) {
-                        mAnimator.cancel();
-                    }
+            if (mAnimator.isStarted()) {
+                mAnimator.cancel();
+            }
 
-                    int current = -mCurrentRV.getCurrentScrollY();
-                    boolean headerCollapsed = mHeaderCollapsed;
-                    moved(current);
-                    applyVerticalMove();
-                    if (headerCollapsed != mHeaderCollapsed) {
-                        AllAppsContainerView parent = (AllAppsContainerView) getParent();
-                        parent.invalidateHeader();
-                    }
-                }
-            };
-
-    protected final Map<AllAppsRow, PluginHeaderRow> mPluginRows = new ArrayMap<>();
-
-    private final int mHeaderTopPadding;
-    private final boolean mHeaderProtectionSupported;
+            int current = -mCurrentRV.getCurrentScrollY();
+            moved(current);
+            apply();
+        }
+    };
 
     protected ViewGroup mTabLayout;
-    private AllAppsRecyclerView mMainRV;
-    private AllAppsRecyclerView mWorkRV;
     private AllAppsRecyclerView mCurrentRV;
+    private ArrayList<AllAppsRecyclerView> mRVs = new ArrayList<>();
     private ViewGroup mParent;
-    public boolean mHeaderCollapsed;
-    protected int mSnappedScrolledY;
+    private boolean mHeaderCollapsed;
+    private int mSnappedScrolledY;
     private int mTranslationY;
 
+    private boolean mAllowTouchForwarding;
     private boolean mForwardToRecyclerView;
 
     protected boolean mTabsHidden;
     protected int mMaxTranslation;
-    private boolean mMainRVActive = true;
-
-    private boolean mCollapsed = false;
-
-    // This is initialized once during inflation and stays constant after that. Fixed views
-    // cannot be added or removed dynamically.
-    private FloatingHeaderRow[] mFixedRows = FloatingHeaderRow.NO_ROWS;
-
-    // Array of all fixed rows and plugin rows. This is initialized every time a plugin is
-    // enabled or disabled, and represent the current set of all rows.
-    private FloatingHeaderRow[] mAllRows = FloatingHeaderRow.NO_ROWS;
-
+    private int mActiveRV = 0;
 
     public FloatingHeaderView(@NonNull Context context) {
         this(context, null);
@@ -115,148 +82,41 @@ public class FloatingHeaderView extends LinearLayout implements
 
     public FloatingHeaderView(@NonNull Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
-        mHeaderTopPadding = context.getResources()
-                .getDimensionPixelSize(R.dimen.all_apps_header_top_padding);
-        mHeaderProtectionSupported = context.getResources().getBoolean(
-                R.bool.config_header_protection_supported);
     }
 
     @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
-        mTabLayout = findViewById(R.id.tabs);
-
-        // Find all floating header rows.
-        ArrayList<FloatingHeaderRow> rows = new ArrayList<>();
-        int count = getChildCount();
-        for (int i = 0; i < count; i++) {
-            View child = getChildAt(i);
-            if (child instanceof FloatingHeaderRow) {
-                rows.add((FloatingHeaderRow) child);
-            }
-        }
-        mFixedRows = rows.toArray(new FloatingHeaderRow[rows.size()]);
-        mAllRows = mFixedRows;
-    }
-
-    @Override
-    protected void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        PluginManagerWrapper.INSTANCE.get(getContext()).addPluginListener(this,
-                AllAppsRow.class, true /* allowMultiple */);
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
-        PluginManagerWrapper.INSTANCE.get(getContext()).removePluginListener(this);
-    }
-
-    @Override
-    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        if (mMainRV != null) {
-            mTabLayout.getLayoutParams().width = mMainRV.getTabWidth();
-        }
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-    }
-
-    private void recreateAllRowsArray() {
-        int pluginCount = mPluginRows.size();
-        if (pluginCount == 0) {
-            mAllRows = mFixedRows;
-        } else {
-            int count = mFixedRows.length;
-            mAllRows = new FloatingHeaderRow[count + pluginCount];
-            for (int i = 0; i < count; i++) {
-                mAllRows[i] = mFixedRows[i];
-            }
-
-            for (PluginHeaderRow row : mPluginRows.values()) {
-                mAllRows[count] = row;
-                count++;
-            }
-        }
-    }
-
-    @Override
-    public void onPluginConnected(AllAppsRow allAppsRowPlugin, Context context) {
-        PluginHeaderRow headerRow = new PluginHeaderRow(allAppsRowPlugin, this);
-        addView(headerRow.mView, indexOfChild(mTabLayout));
-        mPluginRows.put(allAppsRowPlugin, headerRow);
-        recreateAllRowsArray();
-        allAppsRowPlugin.setOnHeightUpdatedListener(this);
-    }
-
-    @Override
-    public void onHeightUpdated() {
-        int oldMaxHeight = mMaxTranslation;
-        updateExpectedHeight();
-
-        if (mMaxTranslation != oldMaxHeight) {
-            AllAppsContainerView parent = (AllAppsContainerView) getParent();
-            if (parent != null) {
-                parent.setupHeader();
-            }
-        }
-    }
-
-    @Override
-    public void onPluginDisconnected(AllAppsRow plugin) {
-        PluginHeaderRow row = mPluginRows.get(plugin);
-        removeView(row.mView);
-        mPluginRows.remove(plugin);
-        recreateAllRowsArray();
-        onHeightUpdated();
-    }
-
-    @Override
-    public View getFocusedChild() {
-        if (FeatureFlags.ENABLE_DEVICE_SEARCH.get()) {
-            for (FloatingHeaderRow row : mAllRows) {
-                if (row.hasVisibleContent() && row.isVisible()) {
-                    return row.getFocusedChild();
-                }
-            }
-            return null;
-        }
-        return super.getFocusedChild();
+        mTabLayout = findViewById(R.id.tabs_scroller);
     }
 
     public void setup(AllAppsContainerView.AdapterHolder[] mAH, boolean tabsHidden) {
-        for (FloatingHeaderRow row : mAllRows) {
-            row.setup(this, mAllRows, tabsHidden);
-        }
-        updateExpectedHeight();
-
         mTabsHidden = tabsHidden;
         mTabLayout.setVisibility(tabsHidden ? View.GONE : View.VISIBLE);
-        mMainRV = setupRV(mMainRV, mAH[AllAppsContainerView.AdapterHolder.MAIN].recyclerView);
-        mWorkRV = setupRV(mWorkRV, mAH[AllAppsContainerView.AdapterHolder.WORK].recyclerView);
-        mParent = (ViewGroup) mMainRV.getParent();
-        setMainActive(mMainRVActive || mWorkRV == null);
+        for (AllAppsRecyclerView recyclerView : mRVs) {
+            recyclerView.removeOnScrollListener(mOnScrollListener);
+        }
+        mRVs.clear();
+        for (AdapterHolder holder : mAH) {
+            if (holder.recyclerView != null) {
+                mRVs.add(setupRV(null, holder.recyclerView));
+            }
+        }
+        mParent = (ViewGroup) mRVs.get(0).getParent();
+        setCurrentActive(Math.min(mActiveRV, mRVs.size() - 1));
         reset(false);
     }
 
     private AllAppsRecyclerView setupRV(AllAppsRecyclerView old, AllAppsRecyclerView updated) {
-        if (old != updated && updated != null) {
+        if (old != updated && updated != null ) {
             updated.addOnScrollListener(mOnScrollListener);
         }
         return updated;
     }
 
-    private void updateExpectedHeight() {
-        mMaxTranslation = 0;
-        if (mCollapsed) {
-            return;
-        }
-        for (FloatingHeaderRow row : mAllRows) {
-            mMaxTranslation += row.getExpectedHeight();
-        }
-    }
-
-    public void setMainActive(boolean active) {
-        mCurrentRV = active ? mMainRV : mWorkRV;
-        mMainRVActive = active;
+    public void setCurrentActive(int active) {
+        mCurrentRV = mRVs.get(active);
+        mActiveRV = active;
     }
 
     public int getMaxTranslation() {
@@ -283,7 +143,7 @@ public class FloatingHeaderView extends LinearLayout implements
                 mHeaderCollapsed = false;
             }
             mTranslationY = currentScrollY;
-        } else {
+        } else if (!mHeaderCollapsed) {
             mTranslationY = currentScrollY - mSnappedScrolledY - mMaxTranslation;
 
             // update state vars
@@ -297,42 +157,18 @@ public class FloatingHeaderView extends LinearLayout implements
         }
     }
 
-    protected void applyVerticalMove() {
+    protected void applyScroll(int uncappedY, int currentY) { }
+
+    protected void apply() {
         int uncappedTranslationY = mTranslationY;
         mTranslationY = Math.max(mTranslationY, -mMaxTranslation);
-
-        if (mCollapsed || uncappedTranslationY < mTranslationY - mHeaderTopPadding) {
-            // we hide it completely if already capped (for opening search anim)
-            for (FloatingHeaderRow row : mAllRows) {
-                row.setVerticalScroll(0, true /* isScrolledOut */);
-            }
-        } else {
-            for (FloatingHeaderRow row : mAllRows) {
-                row.setVerticalScroll(uncappedTranslationY, false /* isScrolledOut */);
-            }
-        }
-
+        applyScroll(uncappedTranslationY, mTranslationY);
         mTabLayout.setTranslationY(mTranslationY);
-
-        int clipHeight = mHeaderTopPadding - getPaddingBottom();
-        mRVClip.top = mTabsHidden ? clipHeight : 0;
-        mHeaderClip.top = clipHeight;
+        mClip.top = mMaxTranslation + mTranslationY;
         // clipping on a draw might cause additional redraw
-        setClipBounds(mHeaderClip);
-        mMainRV.setClipBounds(mRVClip);
-        if (mWorkRV != null) {
-            mWorkRV.setClipBounds(mRVClip);
+        for (AllAppsRecyclerView rv : mRVs) {
+            rv.setClipBounds(mClip);
         }
-    }
-
-    /**
-     * Hides all the floating rows
-     */
-    public void setCollapsed(boolean collapse) {
-        if (mCollapsed == collapse) return;
-
-        mCollapsed = collapse;
-        onHeightUpdated();
     }
 
     public void reset(boolean animate) {
@@ -346,7 +182,7 @@ public class FloatingHeaderView extends LinearLayout implements
             mAnimator.start();
         } else {
             mTranslationY = 0;
-            applyVerticalMove();
+            apply();
         }
         mHeaderCollapsed = false;
         mSnappedScrolledY = -mMaxTranslation;
@@ -360,11 +196,15 @@ public class FloatingHeaderView extends LinearLayout implements
     @Override
     public void onAnimationUpdate(ValueAnimator animation) {
         mTranslationY = (Integer) animation.getAnimatedValue();
-        applyVerticalMove();
+        apply();
     }
 
     @Override
     public boolean onInterceptTouchEvent(MotionEvent ev) {
+        if (!mAllowTouchForwarding) {
+            mForwardToRecyclerView = false;
+            return super.onInterceptTouchEvent(ev);
+        }
         calcOffset(mTempOffset);
         ev.offsetLocation(mTempOffset.x, mTempOffset.y);
         mForwardToRecyclerView = mCurrentRV.onInterceptTouchEvent(ev);
@@ -393,55 +233,23 @@ public class FloatingHeaderView extends LinearLayout implements
         p.y = getTop() - mCurrentRV.getTop() - mParent.getTop();
     }
 
-    public boolean hasVisibleContent() {
-        for (FloatingHeaderRow row : mAllRows) {
-            if (row.hasVisibleContent()) {
-                return true;
-            }
-        }
-        return false;
+    public void setContentVisibility(boolean hasHeader, boolean hasContent, PropertySetter setter,
+            Interpolator fadeInterpolator) {
+        setter.setViewAlpha(this, hasContent ? 1 : 0, fadeInterpolator);
+        allowTouchForwarding(hasContent);
     }
 
-    public boolean isHeaderProtectionSupported() {
-        return mHeaderProtectionSupported;
+    protected void allowTouchForwarding(boolean allow) {
+        mAllowTouchForwarding = allow;
+    }
+
+    public boolean hasVisibleContent() {
+        return false;
     }
 
     @Override
     public boolean hasOverlappingRendering() {
         return false;
-    }
-
-    @Override
-    public void setInsets(Rect insets) {
-        DeviceProfile grid = BaseDraggingActivity.fromContext(getContext()).getDeviceProfile();
-        for (FloatingHeaderRow row : mAllRows) {
-            row.setInsets(insets, grid);
-        }
-    }
-
-    public <T extends FloatingHeaderRow> T findFixedRowByType(Class<T> type) {
-        for (FloatingHeaderRow row : mAllRows) {
-            if (row.getTypeClass() == type) {
-                return (T) row;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Returns visible height of FloatingHeaderView contents requiring header protection
-     */
-    public int getPeripheralProtectionHeight() {
-        if (!mHeaderProtectionSupported) {
-            return 0;
-        }
-
-        // we only want to show protection when work tab is available and header is either
-        // collapsed or animating to/from collapsed state
-        if (mTabsHidden || !mHeaderCollapsed) {
-            return 0;
-        }
-        return Math.max(getHeight() - getPaddingTop() + mTranslationY, 0);
     }
 }
 

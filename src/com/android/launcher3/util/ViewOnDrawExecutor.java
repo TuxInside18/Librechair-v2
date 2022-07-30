@@ -16,49 +16,57 @@
 
 package com.android.launcher3.util;
 
+import android.os.Process;
 import android.view.View;
 import android.view.View.OnAttachStateChangeListener;
 import android.view.ViewTreeObserver.OnDrawListener;
 
 import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherModel;
 
-import java.util.function.Consumer;
+import java.util.ArrayList;
+import java.util.concurrent.Executor;
 
 /**
  * An executor which runs all the tasks after the first onDraw is called on the target view.
  */
-public class ViewOnDrawExecutor implements OnDrawListener, Runnable,
+public class ViewOnDrawExecutor implements Executor, OnDrawListener, Runnable,
         OnAttachStateChangeListener {
 
-    private final RunnableList mTasks;
+    private final ArrayList<Runnable> mTasks = new ArrayList<>();
 
-    private Consumer<ViewOnDrawExecutor> mOnClearCallback;
+    private Launcher mLauncher;
     private View mAttachedView;
     private boolean mCompleted;
 
     private boolean mLoadAnimationCompleted;
     private boolean mFirstDrawCompleted;
 
-    private boolean mCancelled;
-
-    public ViewOnDrawExecutor(RunnableList tasks) {
-        mTasks = tasks;
+    public void attachTo(Launcher launcher) {
+        attachTo(launcher, launcher.getWorkspace(), true /* waitForLoadAnimation */);
     }
 
-    public void attachTo(Launcher launcher) {
-        mOnClearCallback = launcher::clearPendingExecutor;
-        mAttachedView = launcher.getWorkspace();
+    public void attachTo(Launcher launcher, View attachedView, boolean waitForLoadAnimation) {
+        mLauncher = launcher;
+        mAttachedView = attachedView;
         mAttachedView.addOnAttachStateChangeListener(this);
-
-        if (mAttachedView.isAttachedToWindow()) {
-            attachObserver();
+        if (!waitForLoadAnimation) {
+            mLoadAnimationCompleted = true;
         }
+
+        attachObserver();
     }
 
     private void attachObserver() {
         if (!mCompleted) {
             mAttachedView.getViewTreeObserver().addOnDrawListener(this);
         }
+    }
+
+    @Override
+    public void execute(Runnable command) {
+        mTasks.add(command);
+        LauncherModel.setWorkerPriority(Process.THREAD_PRIORITY_BACKGROUND);
     }
 
     @Override
@@ -86,29 +94,31 @@ public class ViewOnDrawExecutor implements OnDrawListener, Runnable,
     public void run() {
         // Post the pending tasks after both onDraw and onLoadAnimationCompleted have been called.
         if (mLoadAnimationCompleted && mFirstDrawCompleted && !mCompleted) {
-            markCompleted();
+            runAllTasks();
         }
     }
 
-    /**
-     * Executes all tasks immediately
-     */
     public void markCompleted() {
-        if (!mCancelled) {
-            mTasks.executeAllAndDestroy();
-        }
+        mTasks.clear();
         mCompleted = true;
         if (mAttachedView != null) {
             mAttachedView.getViewTreeObserver().removeOnDrawListener(this);
             mAttachedView.removeOnAttachStateChangeListener(this);
         }
-        if (mOnClearCallback != null) {
-            mOnClearCallback.accept(this);
+        if (mLauncher != null) {
+            mLauncher.clearPendingExecutor(this);
         }
+        LauncherModel.setWorkerPriority(Process.THREAD_PRIORITY_DEFAULT);
     }
 
-    public void cancel() {
-        mCancelled = true;
+    protected boolean isCompleted() {
+        return mCompleted;
+    }
+
+    protected void runAllTasks() {
+        for (final Runnable r : mTasks) {
+            r.run();
+        }
         markCompleted();
     }
 }

@@ -12,27 +12,37 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * Modifications copyright 2021, Lawnchair
  */
 package com.android.launcher3.allapps;
 
-
 import android.content.Context;
-
-import com.android.launcher3.BaseDraggingActivity;
-import com.android.launcher3.allapps.AllAppsGridAdapter.AdapterItem;
-import com.android.launcher3.config.FeatureFlags;
-import com.android.launcher3.model.data.AppInfo;
+import android.content.pm.LauncherActivityInfo;
+import android.graphics.Color;
+import android.os.UserHandle;
+import androidx.core.graphics.ColorUtils;
+import ch.deletescape.lawnchair.LawnchairPreferences;
+import ch.deletescape.lawnchair.allapps.AppColorComparator;
+import ch.deletescape.lawnchair.groups.DrawerFolderInfo;
+import ch.deletescape.lawnchair.groups.DrawerFolderItem;
+import com.android.launcher3.AppInfo;
+import com.android.launcher3.IconCache;
+import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAppState;
+import com.android.launcher3.Utilities;
+import com.android.launcher3.compat.AlphabeticIndexCompat;
+import com.android.launcher3.compat.LauncherAppsCompat;
+import com.android.launcher3.compat.UserManagerCompat;
+import com.android.launcher3.shortcuts.DeepShortcutManager;
+import com.android.launcher3.util.ComponentKey;
 import com.android.launcher3.util.ItemInfoMatcher;
 import com.android.launcher3.util.LabelComparator;
-
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -46,7 +56,6 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
     private static final int FAST_SCROLL_FRACTION_DISTRIBUTE_BY_NUM_SECTIONS = 1;
 
     private final int mFastScrollDistributionMode = FAST_SCROLL_FRACTION_DISTRIBUTE_BY_NUM_SECTIONS;
-    private final WorkAdapterProvider mWorkAdapterProvider;
 
     /**
      * Info about a fast scroller section, depending if sections are merged, the fast scroller
@@ -59,42 +68,146 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
         public AdapterItem fastScrollToItem;
         // The touch fraction that should map to this fast scroll section info
         public float touchFraction;
+        // The color of this fast scroll section
+        public int color;
 
-        public FastScrollSectionInfo(String sectionName) {
+        public FastScrollSectionInfo(String sectionName, int color) {
             this.sectionName = sectionName;
+            this.color = color;
         }
     }
 
+    /**
+     * Info about a particular adapter item (can be either section or app)
+     */
+    public static class AdapterItem {
+        /** Common properties */
+        // The index of this adapter item in the list
+        public int position;
+        // The type of this item
+        public int viewType;
 
-    private final BaseDraggingActivity mLauncher;
+        /** App-only properties */
+        // The section name of this app.  Note that there can be multiple items with different
+        // sectionNames in the same section
+        public String sectionName = null;
+        // The row that this item shows up on
+        public int rowIndex;
+        // The index of this app in the row
+        public int rowAppIndex;
+        // The associated AppInfo for the app
+        public AppInfo appInfo = null;
+        // The index of this app not including sections
+        public int appIndex = -1;
+
+        /**
+         * Folder-only properties
+         */
+        // The associated folder for the folder
+        public DrawerFolderItem folderItem = null;
+
+        /**
+         * Search suggestion-only properties
+         */
+        public String suggestion;
+
+        public static AdapterItem asApp(int pos, String sectionName, AppInfo appInfo,
+                                        int appIndex) {
+            AdapterItem item = new AdapterItem();
+            item.viewType = AllAppsGridAdapter.VIEW_TYPE_ICON;
+            item.position = pos;
+            item.sectionName = sectionName;
+            item.appInfo = appInfo;
+            item.appIndex = appIndex;
+            return item;
+        }
+
+        public static AdapterItem asEmptySearch(int pos) {
+            AdapterItem item = new AdapterItem();
+            item.viewType = AllAppsGridAdapter.VIEW_TYPE_EMPTY_SEARCH;
+            item.position = pos;
+            return item;
+        }
+
+        public static AdapterItem asAllAppsDivider(int pos) {
+            AdapterItem item = new AdapterItem();
+            item.viewType = AllAppsGridAdapter.VIEW_TYPE_ALL_APPS_DIVIDER;
+            item.position = pos;
+            return item;
+        }
+
+        public static AdapterItem asMarketSearch(int pos) {
+            AdapterItem item = new AdapterItem();
+            item.viewType = AllAppsGridAdapter.VIEW_TYPE_SEARCH_MARKET;
+            item.position = pos;
+            return item;
+        }
+
+        public static AdapterItem asWorkTabFooter(int pos) {
+            AdapterItem item = new AdapterItem();
+            item.viewType = AllAppsGridAdapter.VIEW_TYPE_WORK_TAB_FOOTER;
+            item.position = pos;
+            return item;
+        }
+
+        public static AdapterItem asFolder(int pos, String sectionName,
+                DrawerFolderInfo folderInfo, int folderIndex) {
+            AdapterItem item = new AdapterItem();
+            item.viewType = AllAppsGridAdapter.VIEW_TYPE_FOLDER;
+            item.position = pos;
+            item.sectionName = sectionName;
+            item.folderItem = new DrawerFolderItem(folderInfo, folderIndex);
+            return item;
+        }
+
+        public static AdapterItem asSearchSuggestion(int pos, String suggestion) {
+            AdapterItem item = new AdapterItem();
+            item.viewType = AllAppsGridAdapter.VIEW_TYPE_SEARCH_SUGGESTION;
+            item.position = pos;
+            item.suggestion = suggestion;
+            return item;
+        }
+    }
+
+    private final Launcher mLauncher;
 
     // The set of apps from the system
     private final List<AppInfo> mApps = new ArrayList<>();
     private final AllAppsStore mAllAppsStore;
 
-    // The number of results in current adapter
-    private int mAccessibilityResultsCount = 0;
+    // The set of filtered apps with the current filter
+    private final List<AppInfo> mFilteredApps = new ArrayList<>();
     // The current set of adapter items
     private final ArrayList<AdapterItem> mAdapterItems = new ArrayList<>();
     // The set of sections that we allow fast-scrolling to (includes non-merged sections)
     private final List<FastScrollSectionInfo> mFastScrollerSections = new ArrayList<>();
+    // Is it the work profile app list.
+    private boolean mIsWork;
 
     // The of ordered component names as a result of a search query
-    private ArrayList<AdapterItem> mSearchResults;
+    private ArrayList<ComponentKey> mSearchResults;
+    private HashMap<AppInfo, String> mCachedSectionNames = new HashMap<>();
     private AllAppsGridAdapter mAdapter;
+    private AlphabeticIndexCompat mIndexer;
     private AppInfoComparator mAppNameComparator;
+    private AppColorComparator mAppColorComparator;
     private final int mNumAppsPerRow;
     private int mNumAppRowsInAdapter;
     private ItemInfoMatcher mItemFilter;
+    private LawnchairPreferences prefs;
 
-    public AlphabeticalAppsList(Context context, AllAppsStore appsStore,
-            WorkAdapterProvider adapterProvider) {
+    private List<String> mSearchSuggestions;
+
+    public AlphabeticalAppsList(Context context, AllAppsStore appsStore, boolean isWork) {
         mAllAppsStore = appsStore;
-        mLauncher = BaseDraggingActivity.fromContext(context);
+        mLauncher = Launcher.getLauncher(context);
+        mIndexer = new AlphabeticIndexCompat(context);
         mAppNameComparator = new AppInfoComparator(context);
-        mWorkAdapterProvider = adapterProvider;
-        mNumAppsPerRow = mLauncher.getDeviceProfile().inv.numColumns;
+        mAppColorComparator = new AppColorComparator(context);
+        mIsWork = isWork;
+        mNumAppsPerRow = mLauncher.getDeviceProfile().inv.numColsDrawer;
         mAllAppsStore.addUpdateListener(this);
+        prefs = Utilities.getLawnchairPrefs(context);
     }
 
     public void updateItemFilter(ItemInfoMatcher itemFilter) {
@@ -131,28 +244,6 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
     }
 
     /**
-     * Returns the child adapter item with IME launch focus.
-     */
-    public AdapterItem getFocusedChild() {
-        if (mAdapterItems.size() == 0 || getFocusedChildIndex() == -1) {
-            return null;
-        }
-        return mAdapterItems.get(getFocusedChildIndex());
-    }
-
-    /**
-     * Returns the index of the child with IME launch focus.
-     */
-    public int getFocusedChildIndex() {
-        for (AdapterItem item : mAdapterItems) {
-            if (item.isCountedForAccessibility()) {
-                return mAdapterItems.indexOf(item);
-            }
-        }
-        return -1;
-    }
-
-    /**
      * Returns the number of rows of applications
      */
     public int getNumAppRows() {
@@ -163,7 +254,7 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
      * Returns the number of applications in this list.
      */
     public int getNumFilteredApps() {
-        return mAccessibilityResultsCount;
+        return mFilteredApps.size();
     }
 
     /**
@@ -174,43 +265,44 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
     }
 
     /**
-     * Returns whether there are no filtered results.
+     * Returns whether there are suggestions.
      */
-    public boolean hasNoFilteredResults() {
-        return (mSearchResults != null) && mAccessibilityResultsCount == 0;
+    public boolean hasSuggestions() {
+        return mSearchSuggestions != null && !mSearchSuggestions.isEmpty();
     }
 
     /**
-     * Sets results list for search
+     * Returns whether there are no filtered results.
      */
-    public boolean setSearchResults(ArrayList<AdapterItem> results) {
-        if (!Objects.equals(results, mSearchResults)) {
-            mSearchResults = results;
-            updateAdapterItems();
-            return true;
+    public boolean hasNoFilteredResults() {
+        return (mSearchResults != null) && mFilteredApps.isEmpty() && (mSearchSuggestions != null) && mSearchSuggestions.isEmpty();
+    }
+
+    public List<AppInfo> getFilteredApps() {
+        return mFilteredApps;
+    }
+
+    /**
+     * Sets the sorted list of filtered components.
+     */
+    public boolean setOrderedFilter(ArrayList<ComponentKey> f) {
+        if (mSearchResults != f) {
+            boolean same = mSearchResults != null && mSearchResults.equals(f);
+            mSearchResults = f;
+            onAppsUpdated();
+            return !same;
         }
         return false;
     }
 
-    public boolean appendSearchResults(ArrayList<AdapterItem> results) {
-        if (mSearchResults != null && results != null && results.size() > 0) {
-            updateSearchAdapterItems(results, mSearchResults.size());
-            refreshRecyclerView();
-            return true;
+    public boolean setSearchSuggestions(List<String> suggestions) {
+        if (mSearchSuggestions != suggestions) {
+            boolean same = mSearchSuggestions != null && mSearchSuggestions.equals(suggestions);
+            mSearchSuggestions = suggestions;
+            onAppsUpdated();
+            return !same;
         }
         return false;
-    }
-
-    void updateSearchAdapterItems(ArrayList<AdapterItem> list, int offset) {
-        for (int i = 0; i < list.size(); i++) {
-            AdapterItem adapterItem = list.get(i);
-            adapterItem.position = offset + i;
-            mAdapterItems.add(adapterItem);
-
-            if (adapterItem.isCountedForAccessibility()) {
-                mAccessibilityResultsCount++;
-            }
-        }
     }
 
     /**
@@ -222,24 +314,30 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
         mApps.clear();
 
         for (AppInfo app : mAllAppsStore.getApps()) {
-            if (mItemFilter == null || mItemFilter.matches(app, null)) {
+            if (mItemFilter == null || mItemFilter.matches(app, null) || hasFilter()) {
                 mApps.add(app);
             }
         }
 
-        Collections.sort(mApps, mAppNameComparator);
+        if (prefs.getSortDrawerByColors()) {
+            Collections.sort(mApps, mAppColorComparator);
+        } else {
+            Collections.sort(mApps, mAppNameComparator);
+        }
 
         // As a special case for some languages (currently only Simplified Chinese), we may need to
         // coalesce sections
         Locale curLocale = mLauncher.getResources().getConfiguration().locale;
-        boolean localeRequiresSectionSorting = curLocale.equals(Locale.SIMPLIFIED_CHINESE);
+        boolean localeRequiresSectionSorting =
+                curLocale.getLanguage().equals(Locale.SIMPLIFIED_CHINESE.getLanguage()) &&
+                        curLocale.getCountry().equals(Locale.SIMPLIFIED_CHINESE.getCountry());
         if (localeRequiresSectionSorting) {
             // Compute the section headers. We use a TreeMap with the section name comparator to
             // ensure that the sections are ordered when we iterate over it later
             TreeMap<String, ArrayList<AppInfo>> sectionMap = new TreeMap<>(new LabelComparator());
             for (AppInfo info : mApps) {
                 // Add the section to the cache
-                String sectionName = info.sectionName;
+                String sectionName = getAndUpdateCachedSectionName(info);
 
                 // Add it to the mapping
                 ArrayList<AppInfo> sectionApps = sectionMap.get(sectionName);
@@ -255,19 +353,23 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
             for (Map.Entry<String, ArrayList<AppInfo>> entry : sectionMap.entrySet()) {
                 mApps.addAll(entry.getValue());
             }
+        } else {
+            // Just compute the section headers for use below
+            for (AppInfo info : mApps) {
+                // Add the section to the cache
+                getAndUpdateCachedSectionName(info);
+            }
         }
 
         // Recompose the set of adapter items from the current set of apps
-        if (mSearchResults == null) {
-            updateAdapterItems();
-        }
+        updateAdapterItems();
     }
 
     /**
-     * Updates the set of filtered apps with the current filter. At this point, we expect
+     * Updates the set of filtered apps with the current filter.  At this point, we expect
      * mCachedSectionNames to have been calculated for the set of all apps in mApps.
      */
-    public void updateAdapterItems() {
+    private void updateAdapterItems() {
         refillAdapterItems();
         refreshRecyclerView();
     }
@@ -283,55 +385,84 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
         FastScrollSectionInfo lastFastScrollerSectionInfo = null;
         int position = 0;
         int appIndex = 0;
+        int folderIndex = 0;
 
         // Prepare to update the list of sections, filtered apps, etc.
-        mAccessibilityResultsCount = 0;
+        mFilteredApps.clear();
         mFastScrollerSections.clear();
         mAdapterItems.clear();
 
-        // Recreate the filtered and sectioned apps (for convenience for the grid layout) from the
-        // ordered set of sections
-
-        if (!hasFilter()) {
-            mAccessibilityResultsCount = mApps.size();
-            if (mWorkAdapterProvider != null) {
-                position += mWorkAdapterProvider.addWorkItems(mAdapterItems);
-                if (!mWorkAdapterProvider.shouldShowWorkApps()) {
-                    return;
-                }
+        // Search suggestions should be all the way to the top
+        if (hasFilter() && hasSuggestions()) {
+            for (String suggestion : mSearchSuggestions) {
+                mAdapterItems.add(AdapterItem.asSearchSuggestion(position++, suggestion));
             }
-            for (AppInfo info : mApps) {
-                String sectionName = info.sectionName;
+        }
+
+        // Drawer folders are arranged before all the apps
+        if (!hasFilter()) {
+            for (DrawerFolderInfo info : getFolderInfos()) {
+                String sectionName = "#";
 
                 // Create a new section if the section names do not match
                 if (!sectionName.equals(lastSectionName)) {
                     lastSectionName = sectionName;
-                    lastFastScrollerSectionInfo = new FastScrollSectionInfo(sectionName);
+                    lastFastScrollerSectionInfo = new FastScrollSectionInfo(sectionName,
+                            Color.WHITE);
                     mFastScrollerSections.add(lastFastScrollerSectionInfo);
                 }
 
-                // Create an app item
-                AdapterItem appItem = AdapterItem.asApp(position++, sectionName, info,
-                        appIndex++);
+                info.setAppsStore(mAllAppsStore);
+                // Create an folder item
+                AdapterItem appItem = AdapterItem
+                        .asFolder(position++, sectionName, info, folderIndex++);
                 if (lastFastScrollerSectionInfo.fastScrollToItem == null) {
                     lastFastScrollerSectionInfo.fastScrollToItem = appItem;
                 }
-
                 mAdapterItems.add(appItem);
             }
-        } else {
-            updateSearchAdapterItems(mSearchResults, 0);
-            if (!FeatureFlags.ENABLE_DEVICE_SEARCH.get()) {
-                // Append the search market item
-                if (hasNoFilteredResults()) {
-                    mAdapterItems.add(AdapterItem.asEmptySearch(position++));
-                } else {
-                    mAdapterItems.add(AdapterItem.asAllAppsDivider(position++));
-                }
-                mAdapterItems.add(AdapterItem.asMarketSearch(position++));
-
-            }
         }
+
+        Set<ComponentKey> folderFilters = getFolderFilteredApps();
+
+        // Recreate the filtered and sectioned apps (for convenience for the grid layout) from the
+        // ordered set of sections
+        for (AppInfo info : getFiltersAppInfos()) {
+            if (!hasFilter() && folderFilters.contains(info.toComponentKey())) {
+                continue;
+            }
+            String sectionName = getAndUpdateCachedSectionName(info);
+
+            // Create a new section if the section names do not match
+            if (!sectionName.equals(lastSectionName)) {
+                lastSectionName = sectionName;
+                int color = 0;
+                if (prefs.getSortDrawerByColors()) {
+                    color = info.iconColor;
+                }
+                lastFastScrollerSectionInfo = new FastScrollSectionInfo(sectionName, color);
+                mFastScrollerSections.add(lastFastScrollerSectionInfo);
+            }
+
+            // Create an app item
+            AdapterItem appItem = AdapterItem.asApp(position++, sectionName, info, appIndex++);
+            if (lastFastScrollerSectionInfo.fastScrollToItem == null) {
+                lastFastScrollerSectionInfo.fastScrollToItem = appItem;
+            }
+            mAdapterItems.add(appItem);
+            mFilteredApps.add(info);
+        }
+
+        if (hasFilter()) {
+            // Append the search market item
+            if (hasNoFilteredResults() && !hasSuggestions()) {
+                mAdapterItems.add(AdapterItem.asEmptySearch(position++));
+            } else {
+                mAdapterItems.add(AdapterItem.asAllAppsDivider(position++));
+            }
+            mAdapterItems.add(AdapterItem.asMarketSearch(position++));
+        }
+
         if (mNumAppsPerRow != 0) {
             // Update the number of rows in the adapter after we do all the merging (otherwise, we
             // would have to shift the values again)
@@ -385,5 +516,88 @@ public class AlphabeticalAppsList implements AllAppsStore.OnUpdateListener {
                     break;
             }
         }
+
+        // Add the work profile footer if required.
+        if (shouldShowWorkFooter()) {
+            mAdapterItems.add(AdapterItem.asWorkTabFooter(position++));
+        }
     }
+
+    private boolean shouldShowWorkFooter() {
+        return mIsWork && Utilities.ATLEAST_P &&
+                (DeepShortcutManager.getInstance(mLauncher).hasHostPermission()
+                        || Utilities
+                        .hasPermission(mLauncher, "android.permission.MODIFY_QUIET_MODE"));
+    }
+
+    private List<AppInfo> getFiltersAppInfos() {
+        if (mSearchResults == null) {
+            return mApps;
+        }
+
+        final LauncherAppsCompat launcherApps = LauncherAppsCompat.getInstance(mLauncher);
+        final UserHandle user = android.os.Process.myUserHandle();
+        final IconCache iconCache = LauncherAppState.getInstance(mLauncher).getIconCache();
+        boolean quietMode = UserManagerCompat.getInstance(mLauncher).isQuietModeEnabled(user);
+        ArrayList<AppInfo> result = new ArrayList<>();
+        for (ComponentKey key : mSearchResults) {
+            AppInfo match = mAllAppsStore.getApp(key);
+            if (match != null) {
+                result.add(match);
+            } else {
+                for (LauncherActivityInfo info : launcherApps
+                        .getActivityList(key.componentName.getPackageName(), user)) {
+                    if (info.getComponentName().equals(key.componentName)) {
+                        final AppInfo appInfo = new AppInfo(info, user, quietMode);
+                        iconCache.getTitleAndIcon(appInfo, false);
+                        result.add(appInfo);
+                        break;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Returns the cached section name for the given title, recomputing and updating the cache if
+     * the title has no cached section name.
+     */
+    private String getAndUpdateCachedSectionName(AppInfo info) {
+        String sectionName = mCachedSectionNames.get(info);
+        if (sectionName == null) {
+            if (prefs.getSortDrawerByColors()) {
+                float[] hsl = new float[3];
+                ColorUtils.colorToHSL(info.iconColor, hsl);
+                sectionName = String.format("%d:%d:%d", AppColorComparator.remapHue(hsl[0]), AppColorComparator.remap(hsl[2]), AppColorComparator.remap(hsl[1]));
+            } else {
+                sectionName = mIndexer.computeSectionName(info.title);
+            }
+            mCachedSectionNames.put(info, sectionName);
+        }
+        return sectionName;
+    }
+
+    public void setIsWork(boolean isWork) {
+        mIsWork = isWork;
+    }
+
+    private List<DrawerFolderInfo> getFolderInfos() {
+        return Utilities.getLawnchairPrefs(mLauncher)
+                .getAppGroupsManager()
+                .getDrawerFolders()
+                .getFolderInfos(this);
+    }
+
+    private Set<ComponentKey> getFolderFilteredApps() {
+        return Utilities.getLawnchairPrefs(mLauncher)
+                .getAppGroupsManager()
+                .getDrawerFolders()
+                .getHiddenComponents();
+    }
+
+    public void reset() {
+        updateAdapterItems();
+    }
+
 }

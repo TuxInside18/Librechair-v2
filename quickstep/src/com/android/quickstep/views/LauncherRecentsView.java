@@ -15,163 +15,160 @@
  */
 package com.android.quickstep.views;
 
-import static com.android.launcher3.LauncherState.CLEAR_ALL_BUTTON;
+import static com.android.launcher3.LauncherAppTransitionManagerImpl.ALL_APPS_PROGRESS_OFF_SCREEN;
+import static com.android.launcher3.LauncherState.ALL_APPS_HEADER_EXTRA;
 import static com.android.launcher3.LauncherState.NORMAL;
-import static com.android.launcher3.LauncherState.OVERVIEW;
-import static com.android.launcher3.LauncherState.OVERVIEW_MODAL_TASK;
-import static com.android.launcher3.LauncherState.OVERVIEW_SPLIT_SELECT;
-import static com.android.launcher3.LauncherState.SPRING_LOADED;
-import static com.android.launcher3.testing.TestProtocol.BAD_STATE;
+import static com.android.launcher3.allapps.AllAppsTransitionController.ALL_APPS_PROGRESS;
+import static com.android.launcher3.allapps.AllAppsTransitionController.SCRIM_PROGRESS;
 
+import android.animation.AnimatorSet;
+import android.animation.ObjectAnimator;
 import android.annotation.TargetApi;
 import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Rect;
 import android.os.Build;
 import android.util.AttributeSet;
-import android.util.Log;
-import android.view.MotionEvent;
-import android.view.Surface;
+import android.util.FloatProperty;
+import android.view.View;
+import android.view.ViewDebug;
 
-import androidx.annotation.Nullable;
-
-import com.android.launcher3.AbstractFloatingView;
-import com.android.launcher3.BaseQuickstepLauncher;
+import com.android.launcher3.DeviceProfile;
+import com.android.launcher3.Launcher;
 import com.android.launcher3.LauncherState;
-import com.android.launcher3.statehandlers.DepthController;
-import com.android.launcher3.statemanager.StateManager.StateListener;
-import com.android.launcher3.util.SplitConfigurationOptions;
-import com.android.quickstep.LauncherActivityInterface;
-import com.android.quickstep.util.SplitSelectStateController;
+import com.android.launcher3.R;
+import com.android.launcher3.anim.Interpolators;
+import com.android.launcher3.views.ScrimView;
+import com.android.quickstep.OverviewInteractionState;
+import com.android.quickstep.util.ClipAnimationHelper;
+import com.android.quickstep.util.LayoutUtils;
 
 /**
  * {@link RecentsView} used in Launcher activity
  */
 @TargetApi(Build.VERSION_CODES.O)
-public class LauncherRecentsView extends RecentsView<BaseQuickstepLauncher, LauncherState>
-        implements StateListener<LauncherState> {
+public class LauncherRecentsView extends RecentsView<Launcher> {
+
+    public static final FloatProperty<LauncherRecentsView> TRANSLATION_Y_FACTOR =
+            new FloatProperty<LauncherRecentsView>("translationYFactor") {
+
+                @Override
+                public void setValue(LauncherRecentsView view, float v) {
+                    view.setTranslationYFactor(v);
+                }
+
+                @Override
+                public Float get(LauncherRecentsView view) {
+                    return view.mTranslationYFactor;
+                }
+            };
+
+    @ViewDebug.ExportedProperty(category = "launcher")
+    private float mTranslationYFactor;
 
     public LauncherRecentsView(Context context) {
         this(context, null);
     }
 
-    public LauncherRecentsView(Context context, @Nullable AttributeSet attrs) {
+    public LauncherRecentsView(Context context, AttributeSet attrs) {
         this(context, attrs, 0);
     }
 
-    public LauncherRecentsView(Context context, @Nullable AttributeSet attrs, int defStyleAttr) {
-        super(context, attrs, defStyleAttr, LauncherActivityInterface.INSTANCE);
-        mActivity.getStateManager().addStateListener(this);
-    }
-
-    @Override
-    public void init(OverviewActionsView actionsView,
-            SplitSelectStateController splitPlaceholderView) {
-        super.init(actionsView, splitPlaceholderView);
-        Log.d(BAD_STATE, "LauncherRecentsView init setContentAlpha=0");
+    public LauncherRecentsView(Context context, AttributeSet attrs, int defStyleAttr) {
+        super(context, attrs, defStyleAttr);
         setContentAlpha(0);
     }
 
     @Override
-    public void startHome() {
+    protected void startHome() {
         mActivity.getStateManager().goToState(NORMAL);
-        AbstractFloatingView.closeAllOpenViews(mActivity, mActivity.isStarted());
     }
 
     @Override
-    protected void onTaskLaunchAnimationEnd(boolean success) {
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        setTranslationYFactor(mTranslationYFactor);
+    }
+
+    public void setTranslationYFactor(float translationFactor) {
+        mTranslationYFactor = translationFactor;
+        setTranslationY(computeTranslationYForFactor(mTranslationYFactor));
+    }
+
+    public float computeTranslationYForFactor(float translationYFactor) {
+        return translationYFactor * (getPaddingBottom() - getPaddingTop());
+    }
+
+    @Override
+    public void draw(Canvas canvas) {
+        maybeDrawEmptyMessage(canvas);
+        super.draw(canvas);
+    }
+
+    @Override
+    public void onViewAdded(View child) {
+        super.onViewAdded(child);
+        updateEmptyMessage();
+    }
+
+    @Override
+    protected void onTaskStackUpdated() {
+        // Lazily update the empty message only when the task stack is reapplied
+        updateEmptyMessage();
+    }
+
+    /**
+     * Animates adjacent tasks and translate hotseat off screen as well.
+     */
+    @Override
+    public AnimatorSet createAdjacentPageAnimForTaskLaunch(TaskView tv,
+            ClipAnimationHelper helper) {
+        AnimatorSet anim = super.createAdjacentPageAnimForTaskLaunch(tv, helper);
+
+        if (!OverviewInteractionState.getInstance(mActivity).isSwipeUpGestureEnabled()) {
+            // Hotseat doesn't move when opening recents with the button,
+            // so don't animate it here either.
+            return anim;
+        }
+
+        float allAppsProgressOffscreen = ALL_APPS_PROGRESS_OFF_SCREEN;
+        LauncherState state = mActivity.getStateManager().getState();
+        if ((state.getVisibleElements(mActivity) & ALL_APPS_HEADER_EXTRA) != 0) {
+            float maxShiftRange = mActivity.getDeviceProfile().heightPx;
+            float currShiftRange = mActivity.getAllAppsController().getShiftRange();
+            allAppsProgressOffscreen = 1f + (maxShiftRange - currShiftRange) / maxShiftRange;
+        }
+        anim.play(ObjectAnimator.ofFloat(
+                mActivity.getAllAppsController(), ALL_APPS_PROGRESS, allAppsProgressOffscreen));
+        anim.play(ObjectAnimator.ofFloat(
+                mActivity.getAllAppsController(), SCRIM_PROGRESS, allAppsProgressOffscreen));
+
+        ObjectAnimator dragHandleAnim = ObjectAnimator.ofInt(
+                mActivity.findViewById(R.id.scrim_view), ScrimView.DRAG_HANDLE_ALPHA, 0);
+        dragHandleAnim.setInterpolator(Interpolators.ACCEL_2);
+        anim.play(dragHandleAnim);
+
+        return anim;
+    }
+
+    @Override
+    protected void getTaskSize(DeviceProfile dp, Rect outRect) {
+        LayoutUtils.calculateLauncherTaskSize(getContext(), dp, outRect);
+    }
+
+    @Override
+    protected void onTaskLaunched(boolean success) {
         if (success) {
-            mActivity.getStateManager().moveToRestState();
+            mActivity.getStateManager().goToState(NORMAL, false /* animate */);
         } else {
             LauncherState state = mActivity.getStateManager().getState();
             mActivity.getAllAppsController().setState(state);
         }
-        super.onTaskLaunchAnimationEnd(success);
+        super.onTaskLaunched(success);
     }
 
     @Override
-    public void reset() {
-        super.reset();
-
-        setLayoutRotation(Surface.ROTATION_0, Surface.ROTATION_0);
-    }
-
-    @Override
-    public void onStateTransitionStart(LauncherState toState) {
-        setOverviewStateEnabled(toState.overviewUi);
-        setOverviewGridEnabled(toState.displayOverviewTasksAsGrid(mActivity.getDeviceProfile()));
-        setOverviewFullscreenEnabled(toState.getOverviewFullscreenProgress() == 1);
-        Log.d(BAD_STATE, "LRV onStateTransitionStart setFreezeVisibility=true, toState=" + toState);
-        setFreezeViewVisibility(true);
-    }
-
-    @Override
-    public void onStateTransitionComplete(LauncherState finalState) {
-        if (finalState == NORMAL || finalState == SPRING_LOADED) {
-            // Clean-up logic that occurs when recents is no longer in use/visible.
-            reset();
-        }
-        boolean isOverlayEnabled = finalState == OVERVIEW || finalState == OVERVIEW_MODAL_TASK;
-        setOverlayEnabled(isOverlayEnabled);
-        Log.d(BAD_STATE, "LRV onStateTransitionComplete setFreezeVisibility=false, finalState="
-                + finalState);
-        setFreezeViewVisibility(false);
-
-        if (isOverlayEnabled) {
-            runActionOnRemoteHandles(remoteTargetHandle ->
-                    remoteTargetHandle.getTaskViewSimulator().setDrawsBelowRecents(true));
-        }
-    }
-
-    @Override
-    public void setOverviewStateEnabled(boolean enabled) {
-        super.setOverviewStateEnabled(enabled);
-        if (enabled) {
-            LauncherState state = mActivity.getStateManager().getState();
-            boolean hasClearAllButton = (state.getVisibleElements(mActivity)
-                    & CLEAR_ALL_BUTTON) != 0;
-            setDisallowScrollToClearAll(!hasClearAllButton);
-        }
-    }
-
-    @Override
-    public boolean onTouchEvent(MotionEvent ev) {
-        boolean result = super.onTouchEvent(ev);
-        // Do not let touch escape to siblings below this view.
-        return result || mActivity.getStateManager().getState().overviewUi;
-    }
-
-    @Override
-    protected DepthController getDepthController() {
-        return mActivity.getDepthController();
-    }
-
-    @Override
-    public void setModalStateEnabled(boolean isModalState) {
-        super.setModalStateEnabled(isModalState);
-        if (isModalState) {
-            mActivity.getStateManager().goToState(LauncherState.OVERVIEW_MODAL_TASK);
-        } else {
-            if (mActivity.isInState(LauncherState.OVERVIEW_MODAL_TASK)) {
-                mActivity.getStateManager().goToState(LauncherState.OVERVIEW);
-                resetModalVisuals();
-            }
-        }
-    }
-
-    @Override
-    protected void onDismissAnimationEnds() {
-        super.onDismissAnimationEnds();
-        if (mActivity.isInState(OVERVIEW_SPLIT_SELECT)) {
-            // We want to keep the tasks translations in this temporary state
-            // after resetting the rest above
-            setTaskViewsPrimarySplitTranslation(mTaskViewsPrimarySplitTranslation);
-            setTaskViewsSecondarySplitTranslation(mTaskViewsSecondarySplitTranslation);
-        }
-    }
-
-    @Override
-    public void initiateSplitSelect(TaskView taskView,
-            @SplitConfigurationOptions.StagePosition int stagePosition) {
-        super.initiateSplitSelect(taskView, stagePosition);
-        mActivity.getStateManager().goToState(LauncherState.OVERVIEW_SPLIT_SELECT);
+    public boolean shouldUseMultiWindowTaskSizeStrategy() {
+        return mActivity.isInMultiWindowModeCompat();
     }
 }

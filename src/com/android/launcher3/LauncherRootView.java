@@ -1,142 +1,96 @@
 package com.android.launcher3;
 
-import static com.android.launcher3.ResourceUtils.INVALID_RESOURCE_HANDLE;
-import static com.android.launcher3.config.FeatureFlags.SEPARATE_RECENTS_ACTIVITY;
+import static com.android.launcher3.util.SystemUiController.FLAG_DARK_NAV;
+import static com.android.launcher3.util.SystemUiController.UI_STATE_ROOT_VIEW;
 
 import android.annotation.TargetApi;
+import android.app.ActivityManager;
 import android.content.Context;
-import android.content.res.Resources;
-import android.graphics.Canvas;
-import android.graphics.Insets;
-import android.graphics.Rect;
-import android.os.Build;
+import android.graphics.*;
 import android.util.AttributeSet;
+import android.view.View;
 import android.view.ViewDebug;
-import android.view.WindowInsets;
-
-import androidx.annotation.RequiresApi;
-
-import com.android.launcher3.graphics.SysUiScrim;
-import com.android.launcher3.statemanager.StatefulActivity;
-import com.android.launcher3.uioverrides.ApiWrapper;
-import com.patrykmichalik.opto.core.PreferenceExtensionsKt;
-
-import java.util.Collections;
-import java.util.List;
-
-import app.lawnchair.LawnchairApp;
-import app.lawnchair.preferences2.PreferenceManager2;
 
 public class LauncherRootView extends InsettableFrameLayout {
 
-    private final Rect mTempRect = new Rect();
+    private final Launcher mLauncher;
 
-    private final StatefulActivity mActivity;
+    private final Paint mOpaquePaint;
 
     @ViewDebug.ExportedProperty(category = "launcher")
-    private static final List<Rect> SYSTEM_GESTURE_EXCLUSION_RECT =
-            Collections.singletonList(new Rect());
+    private final Rect mConsumedInsets = new Rect();
 
+    private View mAlignedView;
     private WindowStateListener mWindowStateListener;
-    @ViewDebug.ExportedProperty(category = "launcher")
-    private boolean mDisallowBackGesture;
-    @ViewDebug.ExportedProperty(category = "launcher")
-    private boolean mForceHideBackArrow;
 
-    private final SysUiScrim mSysUiScrim;
-    private final boolean mEnableTaskbarOnPhone;
+    private boolean mHideContent;
 
     public LauncherRootView(Context context, AttributeSet attrs) {
         super(context, attrs);
-        mActivity = StatefulActivity.fromContext(context);
-        mSysUiScrim = new SysUiScrim(this);
-        PreferenceManager2 prefs2 = PreferenceManager2.getInstance(getContext());
-        mEnableTaskbarOnPhone = PreferenceExtensionsKt.firstBlocking(prefs2.getEnableTaskbarOnPhone());
-    }
 
-    private void handleSystemWindowInsets(Rect insets) {
-        // Update device profile before notifying the children.
-        mActivity.getDeviceProfile().updateInsets(insets);
-        boolean resetState = !insets.equals(mInsets);
-        setInsets(insets);
+        mOpaquePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        mOpaquePaint.setColor(Color.BLACK);
+        mOpaquePaint.setStyle(Paint.Style.FILL);
 
-        if (resetState) {
-            mActivity.getStateManager().reapplyState(true /* cancelCurrentAnimation */);
-        }
+        mLauncher = Launcher.getLauncher(context);
     }
 
     @Override
-    public WindowInsets onApplyWindowInsets(WindowInsets insets) {
-        if (Utilities.ATLEAST_R) {
-            insets = updateInsetsDueToTaskbar(insets);
-            Insets systemWindowInsets = insets.getInsetsIgnoringVisibility(
-                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-            mTempRect.set(systemWindowInsets.left, systemWindowInsets.top, systemWindowInsets.right,
-                    systemWindowInsets.bottom);
-        } else {
-            mTempRect.set(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+    protected void onFinishInflate() {
+        if (getChildCount() > 0) {
+            // LauncherRootView contains only one child, which should be aligned
+            // based on the horizontal insets.
+            mAlignedView = getChildAt(0);
         }
-        handleSystemWindowInsets(mTempRect);
-        computeGestureExclusionRect();
-        return insets;
+        super.onFinishInflate();
     }
 
-    /**
-     * Taskbar provides nav bar and tappable insets. However, taskbar is not attached immediately,
-     * and can be destroyed and recreated. Thus, instead of relying on taskbar being present to
-     * get its insets, we calculate them ourselves so they are stable regardless of whether taskbar
-     * is currently attached.
-     *
-     * @param oldInsets The system-provided insets, which we are modifying.
-     * @return The updated insets.
-     */
-    @RequiresApi(api = Build.VERSION_CODES.R)
-    private WindowInsets updateInsetsDueToTaskbar(WindowInsets oldInsets) {
-        if (!ApiWrapper.TASKBAR_DRAWN_IN_PROCESS || !LawnchairApp.isRecentsEnabled()) {
-            // 3P launchers based on Launcher3 should still be inset like normal.
-            return oldInsets;
+    @TargetApi(23)
+    @Override
+    protected boolean fitSystemWindows(Rect insets) {
+        mConsumedInsets.setEmpty();
+        boolean drawInsetBar = false;
+        if (mLauncher.isInMultiWindowModeCompat()
+                && (insets.left > 0 || insets.right > 0 || insets.bottom > 0)) {
+            mConsumedInsets.left = insets.left;
+            mConsumedInsets.right = insets.right;
+            mConsumedInsets.bottom = insets.bottom;
+            insets = new Rect(0, insets.top, 0, 0);
+            drawInsetBar = true;
+        } else  if ((insets.right > 0 || insets.left > 0) &&
+                (!Utilities.ATLEAST_MARSHMALLOW ||
+                        getContext().getSystemService(ActivityManager.class).isLowRamDevice())) {
+            mConsumedInsets.left = insets.left;
+            mConsumedInsets.right = insets.right;
+            insets = new Rect(0, insets.top, 0, insets.bottom);
+            drawInsetBar = true;
         }
 
-        WindowInsets.Builder updatedInsetsBuilder = new WindowInsets.Builder(oldInsets);
+        mLauncher.getSystemUiController().updateUiState(
+                UI_STATE_ROOT_VIEW, drawInsetBar ? FLAG_DARK_NAV : 0);
 
-        DeviceProfile dp = mActivity.getDeviceProfile();
-        Resources resources = getResources();
+        // Update device profile before notifying th children.
+        mLauncher.getDeviceProfile().updateInsets(insets);
+        boolean resetState = !insets.equals(mInsets);
+        setInsets(insets);
 
-        Insets oldNavInsets = oldInsets.getInsets(WindowInsets.Type.navigationBars());
-        Rect newNavInsets = new Rect(oldNavInsets.left, oldNavInsets.top, oldNavInsets.right,
-                oldNavInsets.bottom);
-
-        if (!dp.isTablet && !mEnableTaskbarOnPhone) {
-            return oldInsets;
-        }
-
-        if (dp.isLandscape) {
-            boolean isGesturalMode = ResourceUtils.getIntegerByName(
-                    "config_navBarInteractionMode",
-                    resources,
-                    INVALID_RESOURCE_HANDLE) == 2;
-            if (dp.isTablet || isGesturalMode) {
-                newNavInsets.bottom = ResourceUtils.getNavbarSize(
-                        "navigation_bar_height_landscape", resources);
-            } else {
-                int navWidth = ResourceUtils.getNavbarSize("navigation_bar_width", resources);
-                if (dp.isSeascape()) {
-                    newNavInsets.left = navWidth;
-                } else {
-                    newNavInsets.right = navWidth;
-                }
+        if (mAlignedView != null) {
+            // Apply margins on aligned view to handle consumed insets.
+            MarginLayoutParams lp = (MarginLayoutParams) mAlignedView.getLayoutParams();
+            if (lp.leftMargin != mConsumedInsets.left || lp.rightMargin != mConsumedInsets.right ||
+                    lp.bottomMargin != mConsumedInsets.bottom) {
+                lp.leftMargin = mConsumedInsets.left;
+                lp.rightMargin = mConsumedInsets.right;
+                lp.topMargin = mConsumedInsets.top;
+                lp.bottomMargin = mConsumedInsets.bottom;
+                mAlignedView.setLayoutParams(lp);
             }
-        } else {
-            newNavInsets.bottom = ResourceUtils.getNavbarSize("navigation_bar_height", resources);
         }
-        updatedInsetsBuilder.setInsets(WindowInsets.Type.navigationBars(), Insets.of(newNavInsets));
-        updatedInsetsBuilder.setInsetsIgnoringVisibility(WindowInsets.Type.navigationBars(),
-                Insets.of(newNavInsets));
+        if (resetState) {
+            mLauncher.getStateManager().reapplyState(true /* cancelCurrentAnimation */);
+        }
 
-        mActivity.updateWindowInsets(updatedInsetsBuilder, oldInsets);
-
-        return updatedInsetsBuilder.build();
+        return true; // I'll take it from here
     }
 
     @Override
@@ -145,13 +99,31 @@ public class LauncherRootView extends InsettableFrameLayout {
         // modifying child layout params.
         if (!insets.equals(mInsets)) {
             super.setInsets(insets);
-            mSysUiScrim.onInsetsChanged(insets);
         }
     }
 
     public void dispatchInsets() {
-        mActivity.getDeviceProfile().updateInsets(mInsets);
+        mLauncher.getDeviceProfile().updateInsets(mInsets);
         super.setInsets(mInsets);
+    }
+
+    @Override
+    protected void dispatchDraw(Canvas canvas) {
+        if (mHideContent) return;
+        super.dispatchDraw(canvas);
+
+        // If the right inset is opaque, draw a black rectangle to ensure that is stays opaque.
+        if (mConsumedInsets.right > 0) {
+            int width = getWidth();
+            canvas.drawRect(width - mConsumedInsets.right, 0, width, getHeight(), mOpaquePaint);
+        }
+        if (mConsumedInsets.left > 0) {
+            canvas.drawRect(0, 0, mConsumedInsets.left, getHeight(), mOpaquePaint);
+        }
+        if (mConsumedInsets.bottom > 0) {
+            int height = getHeight();
+            canvas.drawRect(0, height - mConsumedInsets.bottom, getWidth(), height, mOpaquePaint);
+        }
     }
 
     public void setWindowStateListener(WindowStateListener listener) {
@@ -174,53 +146,8 @@ public class LauncherRootView extends InsettableFrameLayout {
         }
     }
 
-    @Override
-    protected void dispatchDraw(Canvas canvas) {
-        mSysUiScrim.draw(canvas);
-        super.dispatchDraw(canvas);
-    }
-
-    @Override
-    protected void onLayout(boolean changed, int l, int t, int r, int b) {
-        super.onLayout(changed, l, t, r, b);
-        computeGestureExclusionRect();
-        mSysUiScrim.setSize(r - l, b - t);
-    }
-
-    private void computeGestureExclusionRect() {
-        int l = getLeft();
-        int t = getTop();
-        int r = getRight();
-        int b = getBottom();
-        if (LawnchairApp.isRecentsEnabled()) {
-            SYSTEM_GESTURE_EXCLUSION_RECT.get(0).set(l, t, r, b);
-        } else {
-            SYSTEM_GESTURE_EXCLUSION_RECT.get(0).set(
-                    l + mTempRect.left, t + mTempRect.top,
-                    r - mTempRect.right, b - mTempRect.bottom);
-        }
-        setDisallowBackGesture(mDisallowBackGesture);
-    }
-
-    @TargetApi(Build.VERSION_CODES.Q)
-    public void setForceHideBackArrow(boolean forceHideBackArrow) {
-        this.mForceHideBackArrow = forceHideBackArrow;
-        setDisallowBackGesture(mDisallowBackGesture);
-    }
-
-    @TargetApi(Build.VERSION_CODES.Q)
-    public void setDisallowBackGesture(boolean disallowBackGesture) {
-        if (!Utilities.ATLEAST_Q || SEPARATE_RECENTS_ACTIVITY.get()) {
-            return;
-        }
-        mDisallowBackGesture = disallowBackGesture;
-        setSystemGestureExclusionRects((mForceHideBackArrow || mDisallowBackGesture)
-                ? SYSTEM_GESTURE_EXCLUSION_RECT
-                : Collections.emptyList());
-    }
-
-    public SysUiScrim getSysUiScrim() {
-        return mSysUiScrim;
+    public void setHideContent(boolean hide) {
+        mHideContent = hide;
     }
 
     public interface WindowStateListener {

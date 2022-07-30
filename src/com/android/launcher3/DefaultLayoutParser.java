@@ -10,20 +10,18 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.res.Resources;
+import android.content.res.XmlResourceParser;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
-
 import com.android.launcher3.LauncherSettings.Favorites;
 import com.android.launcher3.util.Thunk;
-
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserException;
-
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.util.List;
+import org.xmlpull.v1.XmlPullParser;
+import org.xmlpull.v1.XmlPullParserException;
 
 /**
  * Implements the layout parser with rules for internal layouts and partner layouts.
@@ -35,6 +33,7 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
     private static final String TAG_FAVORITES = "favorites";
     protected static final String TAG_FAVORITE = "favorite";
     private static final String TAG_APPWIDGET = "appwidget";
+    private static final String TAG_CUSTOM_APPWIDGET = "custom-appwidget";
     protected static final String TAG_SHORTCUT = "shortcut";
     private static final String TAG_FOLDER = "folder";
     private static final String TAG_PARTNER_FOLDER = "partner-folder";
@@ -58,8 +57,7 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
         return getFolderElementsMap(mSourceRes);
     }
 
-    @Thunk
-    ArrayMap<String, TagParser> getFolderElementsMap(Resources res) {
+    @Thunk ArrayMap<String, TagParser> getFolderElementsMap(Resources res) {
         ArrayMap<String, TagParser> parsers = new ArrayMap<>();
         parsers.put(TAG_FAVORITE, new AppShortcutWithUriParser());
         parsers.put(TAG_SHORTCUT, new UriShortcutParser(res));
@@ -71,7 +69,7 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
         ArrayMap<String, TagParser> parsers = new ArrayMap<>();
         parsers.put(TAG_FAVORITE, new AppShortcutWithUriParser());
         parsers.put(TAG_APPWIDGET, new AppWidgetParser());
-        parsers.put(TAG_SEARCH_WIDGET, new SearchWidgetParser());
+        parsers.put(TAG_CUSTOM_APPWIDGET, new CustomAppWidgetParser());
         parsers.put(TAG_SHORTCUT, new UriShortcutParser(mSourceRes));
         parsers.put(TAG_RESOLVE, new ResolveParser());
         parsers.put(TAG_FOLDER, new MyFolderParser());
@@ -80,13 +78,13 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
     }
 
     @Override
-    protected void parseContainerAndScreen(XmlPullParser parser, int[] out) {
+    protected void parseContainerAndScreen(XmlResourceParser parser, long[] out) {
         out[0] = LauncherSettings.Favorites.CONTAINER_DESKTOP;
         String strContainer = getAttributeValue(parser, ATTR_CONTAINER);
         if (strContainer != null) {
-            out[0] = Integer.parseInt(strContainer);
+            out[0] = Long.valueOf(strContainer);
         }
-        out[1] = Integer.parseInt(getAttributeValue(parser, ATTR_SCREEN));
+        out[1] = Long.parseLong(getAttributeValue(parser, ATTR_SCREEN));
     }
 
     /**
@@ -95,7 +93,7 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
     public class AppShortcutWithUriParser extends AppShortcutParser {
 
         @Override
-        protected int invalidPackageOrClass(XmlPullParser parser) {
+        protected long invalidPackageOrClass(XmlResourceParser parser) {
             final String uri = getAttributeValue(parser, ATTR_URI);
             if (TextUtils.isEmpty(uri)) {
                 Log.e(TAG, "Skipping invalid <favorite> with no component or uri");
@@ -189,7 +187,7 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
         }
 
         @Override
-        protected Intent parseIntent(XmlPullParser parser) {
+        protected Intent parseIntent(XmlResourceParser parser) {
             String uri = null;
             try {
                 uri = getAttributeValue(parser, ATTR_URI);
@@ -209,11 +207,11 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
         private final AppShortcutWithUriParser mChildParser = new AppShortcutWithUriParser();
 
         @Override
-        public int parseAndAdd(XmlPullParser parser) throws XmlPullParserException,
+        public long parseAndAdd(XmlResourceParser parser) throws XmlPullParserException,
                 IOException {
             final int groupDepth = parser.getDepth();
             int type;
-            int addedId = -1;
+            long addedId = -1;
             while ((type = parser.next()) != XmlPullParser.END_TAG ||
                     parser.getDepth() > groupDepth) {
                 if (type != XmlPullParser.START_TAG || addedId > -1) {
@@ -234,11 +232,10 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
     /**
      * A parser which adds a folder whose contents come from partner apk.
      */
-    @Thunk
-    class PartnerFolderParser implements TagParser {
+    @Thunk class PartnerFolderParser implements TagParser {
 
         @Override
-        public int parseAndAdd(XmlPullParser parser) throws XmlPullParserException,
+        public long parseAndAdd(XmlResourceParser parser) throws XmlPullParserException,
                 IOException {
             // Folder contents come from an external XML resource
             final Partner partner = Partner.get(mPackageManager);
@@ -247,7 +244,7 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
                 final int resId = partnerRes.getIdentifier(Partner.RES_FOLDER,
                         "xml", partner.getPackageName());
                 if (resId != 0) {
-                    final XmlPullParser partnerParser = partnerRes.getXml(resId);
+                    final XmlResourceParser partnerParser = partnerRes.getXml(resId);
                     beginDocument(partnerParser, TAG_FOLDER);
 
                     FolderParser folderParser = new FolderParser(getFolderElementsMap(partnerRes));
@@ -261,11 +258,10 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
     /**
      * An extension of FolderParser which allows adding items from a different xml.
      */
-    @Thunk
-    class MyFolderParser extends FolderParser {
+    @Thunk class MyFolderParser extends FolderParser {
 
         @Override
-        public int parseAndAdd(XmlPullParser parser) throws XmlPullParserException,
+        public long parseAndAdd(XmlResourceParser parser) throws XmlPullParserException,
                 IOException {
             final int resId = getAttributeResourceValue(parser, ATTR_FOLDER_ITEMS, 0);
             if (resId != 0) {
@@ -283,12 +279,12 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
     protected class AppWidgetParser extends PendingWidgetParser {
 
         @Override
-        protected int verifyAndInsert(ComponentName cn, Bundle extras) {
+        protected long verifyAndInsert(ComponentName cn, Bundle extras) {
             try {
                 mPackageManager.getReceiverInfo(cn, 0);
             } catch (Exception e) {
                 String[] packages = mPackageManager.currentToCanonicalPackageNames(
-                        new String[]{cn.getPackageName()});
+                        new String[] { cn.getPackageName() });
                 cn = new ComponentName(packages[0], cn.getClassName());
                 try {
                     mPackageManager.getReceiverInfo(cn, 0);
@@ -299,7 +295,7 @@ public class DefaultLayoutParser extends AutoInstallsLayout {
             }
 
             final AppWidgetManager appWidgetManager = AppWidgetManager.getInstance(mContext);
-            int insertedId = -1;
+            long insertedId = -1;
             try {
                 int appWidgetId = mAppWidgetHost.allocateAppWidgetId();
 

@@ -18,8 +18,6 @@ package com.android.launcher3.util;
 
 import android.view.MotionEvent;
 
-import java.io.PrintWriter;
-
 public interface TouchController {
 
     /**
@@ -31,11 +29,4 @@ public interface TouchController {
      * Called when the draglayer receives a intercept touch event.
      */
     boolean onControllerInterceptTouchEvent(MotionEvent ev);
-
-    /**
-     * Called when one handed mode state changed
-     */
-    default void onOneHandedModeStateChanged(boolean activated) { }
-
-    default void dump(String prefix, PrintWriter writer) { }
 }

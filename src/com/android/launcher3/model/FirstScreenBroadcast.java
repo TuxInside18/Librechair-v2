@@ -15,34 +15,24 @@
  */
 package com.android.launcher3.model;
 
-import static android.app.PendingIntent.FLAG_IMMUTABLE;
-import static android.app.PendingIntent.FLAG_ONE_SHOT;
-import static android.os.Process.myUserHandle;
-
-import static com.android.launcher3.pm.InstallSessionHelper.getUserHandle;
-
-import static java.util.stream.Collectors.groupingBy;
-import static java.util.stream.Collectors.mapping;
-
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInstaller.SessionInfo;
-import android.os.UserHandle;
 import android.util.Log;
 
+import com.android.launcher3.FolderInfo;
+import com.android.launcher3.ItemInfo;
+import com.android.launcher3.LauncherAppWidgetInfo;
 import com.android.launcher3.LauncherSettings;
-import com.android.launcher3.model.data.FolderInfo;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.LauncherAppWidgetInfo;
-import com.android.launcher3.util.PackageUserKey;
+import com.android.launcher3.util.MultiHashMap;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Helper class to send broadcasts to package installers that have:
@@ -68,10 +58,24 @@ public class FirstScreenBroadcast {
 
     private static final String VERIFICATION_TOKEN_EXTRA = "verificationToken";
 
-    private final HashMap<PackageUserKey, SessionInfo> mSessionInfoForPackage;
+    private final MultiHashMap<String, String> mPackagesForInstaller;
 
-    public FirstScreenBroadcast(HashMap<PackageUserKey, SessionInfo> sessionInfoForPackage) {
-        mSessionInfoForPackage = sessionInfoForPackage;
+    public FirstScreenBroadcast(HashMap<String, SessionInfo> sessionInfoForPackage) {
+        mPackagesForInstaller = getPackagesForInstaller(sessionInfoForPackage);
+    }
+
+    /**
+     * @return Map where the key is the package name of the installer, and the value is a list
+     *         of packages with active sessions for that installer.
+     */
+    private MultiHashMap<String, String> getPackagesForInstaller(
+            HashMap<String, SessionInfo> sessionInfoForPackage) {
+        MultiHashMap<String, String> packagesForInstaller = new MultiHashMap<>();
+        for (Map.Entry<String, SessionInfo> entry : sessionInfoForPackage.entrySet()) {
+            packagesForInstaller.addToList(entry.getValue().getInstallerPackageName(),
+                    entry.getKey());
+        }
+        return packagesForInstaller;
     }
 
     /**
@@ -79,15 +83,9 @@ public class FirstScreenBroadcast {
      * first screen.
      */
     public void sendBroadcasts(Context context, List<ItemInfo> firstScreenItems) {
-        UserHandle myUser = myUserHandle();
-        mSessionInfoForPackage
-                .values()
-                .stream()
-                .filter(info -> myUser.equals(getUserHandle(info)))
-                .collect(groupingBy(SessionInfo::getInstallerPackageName,
-                        mapping(SessionInfo::getAppPackageName, Collectors.toSet())))
-                .forEach((installer, packages) ->
-                    sendBroadcastToInstaller(context, installer, packages, firstScreenItems));
+        for (Map.Entry<String, ArrayList<String>> entry : mPackagesForInstaller.entrySet()) {
+            sendBroadcastToInstaller(context, entry.getKey(), entry.getValue(), firstScreenItems);
+        }
     }
 
     /**
@@ -96,7 +94,7 @@ public class FirstScreenBroadcast {
      * @param firstScreenItems List of items on the first screen.
      */
     private void sendBroadcastToInstaller(Context context, String installerPackageName,
-            Set<String> packages, List<ItemInfo> firstScreenItems) {
+            List<String> packages, List<ItemInfo> firstScreenItems) {
         Set<String> folderItems = new HashSet<>();
         Set<String> workspaceItems = new HashSet<>();
         Set<String> hotseatItems = new HashSet<>();
@@ -142,7 +140,7 @@ public class FirstScreenBroadcast {
                 .putStringArrayListExtra(HOTSEAT_ITEM_EXTRA, new ArrayList<>(hotseatItems))
                 .putStringArrayListExtra(WIDGET_ITEM_EXTRA, new ArrayList<>(widgetItems))
                 .putExtra(VERIFICATION_TOKEN_EXTRA, PendingIntent.getActivity(context, 0,
-                        new Intent(), FLAG_ONE_SHOT | FLAG_IMMUTABLE)));
+                        new Intent(), PendingIntent.FLAG_ONE_SHOT)));
     }
 
     private static String getPackageName(ItemInfo info) {

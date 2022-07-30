@@ -68,7 +68,7 @@ public class InsettableFrameLayout extends FrameLayout implements Insettable {
     }
 
     public static class LayoutParams extends FrameLayout.LayoutParams {
-        public boolean ignoreInsets = false;
+        boolean ignoreInsets = false;
 
         public LayoutParams(Context c, AttributeSet attrs) {
             super(c, attrs);
@@ -91,9 +91,6 @@ public class InsettableFrameLayout extends FrameLayout implements Insettable {
     @Override
     public void onViewAdded(View child) {
         super.onViewAdded(child);
-        if (!isAttachedToWindow()) {
-            return;
-        }
         setFrameLayoutChildInsets(child, mInsets, new Rect());
     }
 

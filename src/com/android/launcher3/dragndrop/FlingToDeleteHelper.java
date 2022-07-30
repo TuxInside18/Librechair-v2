@@ -17,12 +17,12 @@
 package com.android.launcher3.dragndrop;
 
 import android.graphics.PointF;
+import android.os.SystemClock;
+import android.view.DragEvent;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.ViewConfiguration;
-
 import com.android.launcher3.ButtonDropTarget;
-import com.android.launcher3.DeviceProfile;
 import com.android.launcher3.DropTarget;
 import com.android.launcher3.Launcher;
 import com.android.launcher3.R;
@@ -36,12 +36,15 @@ public class FlingToDeleteHelper {
     private static final float MAX_FLING_DEGREES = 35f;
 
     private final Launcher mLauncher;
+    private final int mFlingToDeleteThresholdVelocity;
 
     private ButtonDropTarget mDropTarget;
     private VelocityTracker mVelocityTracker;
 
     public FlingToDeleteHelper(Launcher launcher) {
         mLauncher = launcher;
+        mFlingToDeleteThresholdVelocity = launcher.getResources()
+                .getDimensionPixelSize(R.dimen.drag_flingToDeleteMinVelocity);
     }
 
     public void recordMotionEvent(MotionEvent ev) {
@@ -49,6 +52,31 @@ public class FlingToDeleteHelper {
             mVelocityTracker = VelocityTracker.obtain();
         }
         mVelocityTracker.addMovement(ev);
+    }
+
+    /**
+     * Same as {@link #recordMotionEvent}. It creates a temporary {@link MotionEvent} object
+     * using {@param event} for tracking velocity.
+     */
+    public void recordDragEvent(long dragStartTime, DragEvent event) {
+        final int motionAction;
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED:
+                motionAction = MotionEvent.ACTION_DOWN;
+                break;
+            case DragEvent.ACTION_DRAG_LOCATION:
+                motionAction = MotionEvent.ACTION_MOVE;
+                break;
+            case DragEvent.ACTION_DRAG_ENDED:
+                motionAction = MotionEvent.ACTION_UP;
+                break;
+            default:
+                return;
+        }
+        MotionEvent emulatedEvent = MotionEvent.obtain(dragStartTime, SystemClock.uptimeMillis(),
+                motionAction, event.getX(), event.getY(), 0);
+        recordMotionEvent(emulatedEvent);
+        emulatedEvent.recycle();
     }
 
     public void releaseVelocityTracker() {
@@ -62,16 +90,12 @@ public class FlingToDeleteHelper {
         return mDropTarget;
     }
 
-    public Runnable getFlingAnimation(DropTarget.DragObject dragObject, DragOptions options) {
-        if (options == null) {
-            return null;
-        }
+    public Runnable getFlingAnimation(DropTarget.DragObject dragObject) {
         PointF vel = isFlingingToDelete();
-        options.isFlingToDelete = vel != null;
-        if (!options.isFlingToDelete) {
+        if (vel == null) {
             return null;
         }
-        return new FlingAnimation(dragObject, vel, mDropTarget, mLauncher, options);
+        return new FlingAnimation(dragObject, vel, mDropTarget, mLauncher);
     }
 
     /**
@@ -80,7 +104,6 @@ public class FlingToDeleteHelper {
      * @return the vector at which the item was flung, or null if no fling was detected.
      */
     private PointF isFlingingToDelete() {
-        if (mVelocityTracker == null) return null;
         if (mDropTarget == null) {
             mDropTarget = (ButtonDropTarget) mLauncher.findViewById(R.id.delete_target_text);
         }
@@ -89,14 +112,13 @@ public class FlingToDeleteHelper {
         mVelocityTracker.computeCurrentVelocity(1000, config.getScaledMaximumFlingVelocity());
         PointF vel = new PointF(mVelocityTracker.getXVelocity(), mVelocityTracker.getYVelocity());
         float theta = MAX_FLING_DEGREES + 1;
-        DeviceProfile deviceProfile = mLauncher.getDeviceProfile();
-        if (mVelocityTracker.getYVelocity() < deviceProfile.flingToDeleteThresholdVelocity) {
+        if (mVelocityTracker.getYVelocity() < mFlingToDeleteThresholdVelocity) {
             // Do a quick dot product test to ensure that we are flinging upwards
             PointF upVec = new PointF(0f, -1f);
             theta = getAngleBetweenVectors(vel, upVec);
         } else if (mLauncher.getDeviceProfile().isVerticalBarLayout() &&
-                mVelocityTracker.getXVelocity() < deviceProfile.flingToDeleteThresholdVelocity) {
-            // Remove icon is on left side instead of top, so check if we are flinging to the left.
+                mVelocityTracker.getXVelocity() < mFlingToDeleteThresholdVelocity) {
+            // Remove iconView is on left side instead of top, so check if we are flinging to the left.
             PointF leftVec = new PointF(-1f, 0f);
             theta = getAngleBetweenVectors(vel, leftVec);
         }

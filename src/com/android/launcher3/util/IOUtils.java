@@ -16,14 +16,7 @@
 
 package com.android.launcher3.util;
 
-import android.os.FileUtils;
-import android.util.Log;
-
-import com.android.launcher3.Utilities;
-import com.android.launcher3.config.FeatureFlags;
-
 import java.io.ByteArrayOutputStream;
-import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -36,7 +29,6 @@ import java.io.OutputStream;
 public class IOUtils {
 
     private static final int BUF_SIZE = 0x1000; // 4K
-    private static final String TAG = "IOUtils";
 
     public static byte[] toByteArray(File file) throws IOException {
         try (InputStream in = new FileInputStream(file)) {
@@ -51,9 +43,6 @@ public class IOUtils {
     }
 
     public static long copy(InputStream from, OutputStream to) throws IOException {
-        if (Utilities.ATLEAST_Q) {
-            return FileUtils.copy(from, to);
-        }
         byte[] buf = new byte[BUF_SIZE];
         long total = 0;
         int r;
@@ -62,17 +51,5 @@ public class IOUtils {
             total += r;
         }
         return total;
-    }
-
-    public static void closeSilently(Closeable c) {
-        if (c != null) {
-            try {
-                c.close();
-            } catch (IOException e) {
-                if (FeatureFlags.IS_STUDIO_BUILD) {
-                    Log.d(TAG, "Error closing", e);
-                }
-            }
-        }
     }
 }

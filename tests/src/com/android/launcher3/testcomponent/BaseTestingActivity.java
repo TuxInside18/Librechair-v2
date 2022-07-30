@@ -20,7 +20,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.View;
@@ -64,7 +63,6 @@ public class BaseTestingActivity extends Activity implements View.OnClickListene
         mView = new LinearLayout(this);
         mView.setPadding(mMargin, mMargin, mMargin, mMargin);
         mView.setOrientation(LinearLayout.VERTICAL);
-        mView.setBackgroundColor(Color.BLUE);
         setContentView(mView);
 
         registerReceiver(mCommandReceiver, new IntentFilter(mAction + SUFFIX_COMMAND));

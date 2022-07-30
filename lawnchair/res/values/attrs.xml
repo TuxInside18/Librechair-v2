@@ -1,47 +1,100 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  ~ Copyright 2021, Lawnchair
-  ~
-  ~ Licensed under the Apache License, Version 2.0 (the "License");
-  ~ you may not use this file except in compliance with the License.
-  ~ You may obtain a copy of the License at
-  ~
-  ~     http://www.apache.org/licenses/LICENSE-2.0
-  ~
-  ~ Unless required by applicable law or agreed to in writing, software
-  ~ distributed under the License is distributed on an "AS IS" BASIS,
-  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  ~ See the License for the specific language governing permissions and
-  ~ limitations under the License.
-  -->
-
 <resources>
-    <attr name="uiColorMode" format="integer" />
-    <attr name="allAppsAlternateTextColor" format="color" />
-    <attr name="searchboxHighlight" format="color" />
-    <attr name="focusHighlight" format="color" />
-    <attr name="groupHighlight" format="color" />
-    <attr name="qsbFillColor" format="color" />
-    <attr name="qsbIconTintPrimary" format="color" />
-    <attr name="qsbIconTintQuaternary" format="color" />
-    <attr name="qsbIconTintSecondary" format="color" />
-    <attr name="qsbIconTintTertiary" format="color" />
+    <!-- Pixel -->
+    <attr name="gIcon" format="reference" />
+    <attr name="micIcon" format="reference" />
 
-    <attr name="colorAccentPrimary" format="color" />
-    <attr name="textColorOnAccent" format="color" />
+    <attr name="content" format="reference" />
 
-    <attr name="customFontType" format="reference" />
-
-    <declare-styleable name="CustomSeekBarPreference">
-        <attr name="minValue" format="integer" />
-        <attr name="maxValue" format="integer" />
-        <attr name="snapEvery" format="integer" />
-        <attr name="asPercentages" format="boolean" />
+    <!-- Lawnchair -->
+    <declare-styleable name="SubPreference">
+        <attr name="content" />
+        <attr name="longClickContent" format="reference" />
+        <attr name="hasPreview" format="boolean" />
     </declare-styleable>
+
+    <declare-styleable name="SeekbarPreference">
+        <attr name="minValue" format="float" />
+        <attr name="maxValue" format="float" />
+        <attr name="summaryFormat" format="string" />
+        <attr name="summaryMultiplier" format="integer" />
+        <attr name="defaultSeekbarValue" format="float" />
+        <attr name="steps" format="integer" />
+    </declare-styleable>
+
+    <declare-styleable name="IntSeekbarPreference">
+        <attr name="minValueI" format="integer" />
+        <attr name="maxValueI" format="integer" />
+        <attr name="defaultSeekbarValueI" format="integer" />
+    </declare-styleable>
+
+    <declare-styleable name="ColorPickerPreference">
+        <attr name="colorMode" format="integer" >
+            <enum name="RGB" value="0" />
+            <enum name="ARGB" value="1" />
+            <enum name="HSV" value="2"/>
+        </attr>
+        <attr name="resolvers" value="reference"/>
+    </declare-styleable>
+
+    <declare-styleable name="PreviewPreference">
+        <attr name="previewLayout" format="float" />
+    </declare-styleable>
+
+    <declare-styleable name="GesturePreference">
+        <attr name="gestureClass" format="string"/>
+    </declare-styleable>
+
+    <declare-styleable name="ControlledPreference">
+        <attr name="searchTitle" format="string" />
+        <attr name="controllerClass" format="string" />
+    </declare-styleable>
+
+    <declare-styleable name="AdvancedPreferencesGroup">
+        <attr name="topic" format="string" />
+    </declare-styleable>
+
+    <declare-styleable name="PreferenceDialogPreference">
+        <attr name="content" />
+    </declare-styleable>
+
+    <declare-styleable name="ThemeFlagSwitchPreference">
+        <attr name="switchFlag" format="integer" />
+    </declare-styleable>
+
+    <!-- Custom -->
+    <attr name="bottomSheetNavBarColor" format="color" />
+    <attr name="useLightSystemBars" format="boolean" />
+    <attr name="settingsBackground" format="color" />
+    <attr name="settingsSearchBackground" format="color" />
+    <attr name="settingsPopupBackground" format="color" />
+    <attr name="bottomSheetScrimColor" format="color" />
+    <attr name="qsbEdgeRadius" format="dimension" />
+    <attr name="folderIconRadius" format="float" />
 
     <declare-styleable name="CustomFont">
         <attr name="android:textAppearance"/>
-        <attr name="customFontType" />
+        <attr name="customFontType" format="enum">
+            <enum name="title" value="0" />
+            <enum name="preferenceTitle" value="1" />
+            <enum name="button" value="2" />
+            <enum name="categoryTitle" value="3" />
+            <enum name="dialogTitle" value="4" />
+            <enum name="settingsTab" value="5" />
+            <enum name="text" value="6" />
+            <enum name="settingsTileTitle" value="7" />
+            <enum name="smartspaceText" value="8" />
+            <enum name="baseIcon" value="9" />
+            <enum name="workspaceIcon" value="10" />
+            <enum name="allAppsIcon" value="11" />
+            <enum name="folderIcon" value="12" />
+            <enum name="actionView" value="13" />
+            <enum name="deepShortcut" value="14" />
+            <enum name="systemShortcut" value="15" />
+            <enum name="taskOption" value="16" />
+            <enum name="drawerTab" value="17" />
+            <enum name="drawerFolder" value="18"/>
+        </attr>
         <attr name="customFontWeight" format="enum">
             <enum name="w100" value="100" />
             <enum name="w200" value="200" />
@@ -55,15 +108,16 @@
         </attr>
     </declare-styleable>
 
-    <declare-styleable name="CustomTextView">
-        <attr name="customFontType" />
-    </declare-styleable>
-
-    <declare-styleable name="ExtendedEditText">
-        <attr name="customFontType" />
-    </declare-styleable>
-
-    <declare-styleable name="FallbackSearchInputView">
-        <attr name="customFontType" />
+    <declare-styleable name="IndexablePreference">
+        <attr name="android:key" />
+        <attr name="android:defaultValue" />
+        <attr name="android:icon" />
+        <attr name="android:title" />
+        <attr name="android:summary" />
+        <attr name="searchTitle" />
+        <attr name="controllerClass" />
+        <attr name="content" />
+        <attr name="hasPreview" />
+        <attr name="indexable" />
     </declare-styleable>
 </resources>

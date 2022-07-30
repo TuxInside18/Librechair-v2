@@ -12,14 +12,7 @@
      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
      See the License for the specific language governing permissions and
      limitations under the License.
-
-     Modifications copyright 2021, Lawnchair
 -->
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background>
-        <bitmap android:src="@mipmap/ic_launcher_home_background" />
-    </background>
-    <foreground>
-        <bitmap android:src="@mipmap/ic_launcher_home_foreground"/>
-    </foreground>
-</adaptive-icon>
+<bitmap
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@mipmap/ic_launcher_home" />

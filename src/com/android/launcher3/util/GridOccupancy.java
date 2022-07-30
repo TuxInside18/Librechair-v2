@@ -2,7 +2,7 @@ package com.android.launcher3.util;
 
 import android.graphics.Rect;
 
-import com.android.launcher3.model.data.ItemInfo;
+import com.android.launcher3.ItemInfo;
 
 /**
  * Utility object to manage the occupancy in a grid.

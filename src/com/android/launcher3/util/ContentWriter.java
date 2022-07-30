@@ -19,14 +19,14 @@ package com.android.launcher3.util;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.UserHandle;
 
 import com.android.launcher3.LauncherAppState;
 import com.android.launcher3.LauncherSettings;
-import com.android.launcher3.icons.BitmapInfo;
-import com.android.launcher3.icons.GraphicsUtils;
-import com.android.launcher3.pm.UserCache;
+import com.android.launcher3.Utilities;
+import com.android.launcher3.compat.UserManagerCompat;
 
 /**
  * A wrapper around {@link ContentValues} with some utility methods.
@@ -37,7 +37,7 @@ public class ContentWriter {
     private final Context mContext;
 
     private CommitParams mCommitParams;
-    private BitmapInfo mIcon;
+    private Bitmap mIcon;
     private UserHandle mUser;
 
     public ContentWriter(Context context, CommitParams commitParams) {
@@ -79,14 +79,19 @@ public class ContentWriter {
         return this;
     }
 
-    public ContentWriter putIcon(BitmapInfo value, UserHandle user) {
+    public ContentWriter put(String key, byte[] value) {
+        mValues.put(key, value);
+        return this;
+    }
+
+    public ContentWriter putIcon(Bitmap value, UserHandle user) {
         mIcon = value;
         mUser = user;
         return this;
     }
 
     public ContentWriter put(String key, UserHandle user) {
-        return put(key, UserCache.INSTANCE.get(mContext).getSerialNumberForUser(user));
+        return put(key, UserManagerCompat.getInstance(mContext).getSerialNumberForUser(user));
     }
 
     /**
@@ -97,7 +102,7 @@ public class ContentWriter {
         Preconditions.assertNonUiThread();
         if (mIcon != null && !LauncherAppState.getInstance(context).getIconCache()
                 .isDefaultIcon(mIcon, mUser)) {
-            mValues.put(LauncherSettings.Favorites.ICON, GraphicsUtils.flattenBitmap(mIcon.icon));
+            mValues.put(LauncherSettings.Favorites.ICON, Utilities.flattenBitmap(mIcon));
             mIcon = null;
         }
         return mValues;
@@ -113,26 +118,14 @@ public class ContentWriter {
 
     public static final class CommitParams {
 
-        final Uri mUri;
-        final String mWhere;
-        final String[] mSelectionArgs;
+        final Uri mUri = LauncherSettings.Favorites.CONTENT_URI;
+        String mWhere;
+        String[] mSelectionArgs;
 
         public CommitParams(String where, String[] selectionArgs) {
-            this(LauncherSettings.Favorites.CONTENT_URI, where, selectionArgs);
-        }
-
-        private CommitParams(Uri uri, String where, String[] selectionArgs) {
-            mUri = uri;
             mWhere = where;
             mSelectionArgs = selectionArgs;
         }
 
-        /**
-         * Creates commit params for backup table.
-         */
-        public static CommitParams backupCommitParams(String where, String[] selectionArgs) {
-            return new CommitParams(
-                    LauncherSettings.Favorites.BACKUP_CONTENT_URI, where, selectionArgs);
-        }
     }
 }

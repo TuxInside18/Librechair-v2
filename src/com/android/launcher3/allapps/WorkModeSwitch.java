@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 The Android Open Source Project
+ * Copyright (C) 2018 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,167 +15,94 @@
  */
 package com.android.launcher3.allapps;
 
-import static com.android.launcher3.logging.StatsLogManager.LauncherEvent.LAUNCHER_TURN_OFF_WORK_APPS_TAP;
-
 import android.content.Context;
-import android.content.res.ColorStateList;
-import android.graphics.Insets;
-import android.graphics.Rect;
+import android.os.AsyncTask;
+import android.os.Process;
+import android.os.UserHandle;
 import android.util.AttributeSet;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.WindowInsets;
-import android.widget.Button;
-
-import com.android.launcher3.BaseDraggingActivity;
-import com.android.launcher3.DeviceProfile;
-import com.android.launcher3.Insettable;
-import com.android.launcher3.Launcher;
+import android.widget.Switch;
+import ch.deletescape.lawnchair.LawnchairUtilsKt;
+import ch.deletescape.lawnchair.colors.ColorEngine;
 import com.android.launcher3.Utilities;
-import com.android.launcher3.anim.KeyboardInsetAnimationCallback;
-import com.android.launcher3.workprofile.PersonalWorkSlidingTabStrip;
+import com.android.launcher3.compat.UserManagerCompat;
+import java.util.List;
 
-import app.lawnchair.font.FontManager;
-import app.lawnchair.theme.color.ColorStateListTokens;
-import app.lawnchair.theme.drawable.DrawableTokens;
-
-/**
- * Work profile toggle switch shown at the bottom of AllApps work tab
- */
-public class WorkModeSwitch extends Button implements Insettable, View.OnClickListener,
-        KeyboardInsetAnimationCallback.KeyboardInsetListener,
-        PersonalWorkSlidingTabStrip.OnActivePageChangedListener {
-
-    private static final int FLAG_FADE_ONGOING = 1 << 1;
-    private static final int FLAG_TRANSLATION_ONGOING = 1 << 2;
-    private static final int FLAG_PROFILE_TOGGLE_ONGOING = 1 << 3;
-
-    private final Rect mInsets = new Rect();
-    private int mFlags;
-    private boolean mWorkEnabled;
-    private boolean mOnWorkTab;
-
+public class WorkModeSwitch extends Switch {
 
     public WorkModeSwitch(Context context) {
-        this(context, null, 0);
+        super(context);
     }
 
     public WorkModeSwitch(Context context, AttributeSet attrs) {
-        this(context, attrs, 0);
+        super(context, attrs);
     }
 
     public WorkModeSwitch(Context context, AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
-
-        FontManager.INSTANCE.get(context).overrideFont(this, attrs);
     }
 
     @Override
-    protected void onFinishInflate() {
-        super.onFinishInflate();
-        setSelected(true);
-        setOnClickListener(this);
-        if (Utilities.ATLEAST_R) {
-            KeyboardInsetAnimationCallback keyboardInsetAnimationCallback =
-                    new KeyboardInsetAnimationCallback(this);
-            setWindowInsetsAnimationCallback(keyboardInsetAnimationCallback);
-        }
-
-        setBackground(DrawableTokens.WorkAppsToggleBackground.resolve(getContext()));
-        ColorStateList textColor = ColorStateListTokens.AllAppsTabText.resolve(getContext());
-        setTextColor(textColor);
-        setCompoundDrawableTintList(textColor);
-        DeviceProfile grid = BaseDraggingActivity.fromContext(getContext()).getDeviceProfile();
-        setInsets(grid.getInsets());
+    public void setChecked(boolean checked) {
+        // No-op, do not change the checked state until broadcast is received.
     }
 
     @Override
-    public void setInsets(Rect insets) {
-        int bottomInset = insets.bottom - mInsets.bottom;
-        mInsets.set(insets);
-        ViewGroup.MarginLayoutParams marginLayoutParams =
-                (ViewGroup.MarginLayoutParams) getLayoutParams();
-        if (marginLayoutParams != null) {
-            marginLayoutParams.bottomMargin = bottomInset + marginLayoutParams.bottomMargin;
-        }
-    }
-
-
-    @Override
-    public void onActivePageChanged(int page) {
-        mOnWorkTab = page == AllAppsContainerView.AdapterHolder.WORK;
-        updateVisibility();
-    }
-
-    @Override
-    public void onClick(View view) {
-        if (Utilities.ATLEAST_P && isEnabled()) {
-            setFlag(FLAG_PROFILE_TOGGLE_ONGOING);
-            Launcher launcher = Launcher.getLauncher(getContext());
-            launcher.getStatsLogManager().logger().log(LAUNCHER_TURN_OFF_WORK_APPS_TAP);
-            launcher.getAppsView().getWorkManager().setWorkProfileEnabled(false);
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        int accent = ColorEngine.getInstance(getContext()).getAccent();
+        LawnchairUtilsKt.applyColor(this, accent);
+        if (Utilities.hasKnoxSecureFolder(getContext())) {
+            // Samsung secure folder breaks work mode APIs and completely breaks
+            // when we try to enable quiet mode from Launcher.
+            setVisibility(View.GONE);
         }
     }
 
     @Override
-    public boolean isEnabled() {
-        return super.isEnabled() && getVisibility() == VISIBLE && mFlags == 0;
+    public void toggle() {
+        trySetQuietModeEnabledToAllProfilesAsync(isChecked());
     }
 
-    /**
-     * Sets the enabled or disabled state of the button
-     */
-    public void updateCurrentState(boolean isEnabled) {
-        removeFlag(FLAG_PROFILE_TOGGLE_ONGOING);
-        if (mWorkEnabled != isEnabled) {
-            mWorkEnabled = isEnabled;
-            updateVisibility();
-        }
+    private void setCheckedInternal(boolean checked) {
+        super.setChecked(checked);
     }
 
-
-    private void updateVisibility() {
-        clearAnimation();
-        if (mWorkEnabled && mOnWorkTab) {
-            setFlag(FLAG_FADE_ONGOING);
-            setVisibility(VISIBLE);
-            animate().alpha(1).withEndAction(() -> removeFlag(FLAG_FADE_ONGOING)).start();
-        } else if (getVisibility() != GONE) {
-            setFlag(FLAG_FADE_ONGOING);
-            animate().alpha(0).withEndAction(() -> {
-                removeFlag(FLAG_FADE_ONGOING);
-                this.setVisibility(GONE);
-            }).start();
-        }
+    public void refresh() {
+        UserManagerCompat userManager = UserManagerCompat.getInstance(getContext());
+        setCheckedInternal(!userManager.isAnyProfileQuietModeEnabled());
+        setEnabled(true);
     }
 
-    @Override
-    public WindowInsets onApplyWindowInsets(WindowInsets insets) {
-        if (Utilities.ATLEAST_R && isEnabled()) {
-            setTranslationY(0);
-            if (insets.isVisible(WindowInsets.Type.ime())) {
-                Insets keyboardInsets = insets.getInsets(WindowInsets.Type.ime());
-                setTranslationY(mInsets.bottom - keyboardInsets.bottom);
+    private void trySetQuietModeEnabledToAllProfilesAsync(boolean enabled) {
+        new AsyncTask<Void, Void, Boolean>() {
+
+            @Override
+            protected void onPreExecute() {
+                super.onPreExecute();
+                setEnabled(false);
             }
-        }
-        return insets;
-    }
 
-    @Override
-    public void onTranslationStart() {
-        setFlag(FLAG_TRANSLATION_ONGOING);
-    }
+            @Override
+            protected Boolean doInBackground(Void... voids) {
+                UserManagerCompat userManager = UserManagerCompat.getInstance(getContext());
+                List<UserHandle> userProfiles = userManager.getUserProfiles();
+                boolean showConfirm = false;
+                for (UserHandle userProfile : userProfiles) {
+                    if (Process.myUserHandle().equals(userProfile)) {
+                        continue;
+                    }
+                    showConfirm |= !userManager.requestQuietModeEnabled(enabled, userProfile);
+                }
+                return showConfirm;
+            }
 
-    @Override
-    public void onTranslationEnd() {
-        removeFlag(FLAG_TRANSLATION_ONGOING);
-    }
-
-    private void setFlag(int flag) {
-        mFlags |= flag;
-    }
-
-    private void removeFlag(int flag) {
-        mFlags &= ~flag;
+            @Override
+            protected void onPostExecute(Boolean showConfirm) {
+                if (showConfirm) {
+                    setEnabled(true);
+                }
+            }
+        }.execute();
     }
 }

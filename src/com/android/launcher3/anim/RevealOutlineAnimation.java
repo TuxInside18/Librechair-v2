@@ -8,6 +8,8 @@ import android.graphics.Rect;
 import android.view.View;
 import android.view.ViewOutlineProvider;
 
+import com.android.launcher3.Utilities;
+
 /**
  * A {@link ViewOutlineProvider} that has helper functions to create reveal animations.
  * This class should be extended so that subclasses can define the reveal shape as the
@@ -26,27 +28,9 @@ public abstract class RevealOutlineAnimation extends ViewOutlineProvider {
     /** Sets the progress, from 0 to 1, of the reveal animation. */
     abstract void setProgress(float progress);
 
-    /**
-     * @see #createRevealAnimator(View, boolean, float) where startProgress is set to 0.
-     */
     public ValueAnimator createRevealAnimator(final View revealView, boolean isReversed) {
-        return createRevealAnimator(revealView, isReversed, 0f /* startProgress */);
-    }
-
-    /**
-     * Animates the given View's ViewOutline according to {@link #setProgress(float)}.
-     * @param revealView The View whose outline we are animating.
-     * @param isReversed Whether we are hiding rather than revealing the View.
-     * @param startProgress The progress at which to start the newly created animation. Useful if
-     * the previous reveal animation was cancelled and we want to create a new animation where it
-     * left off. Note that if isReversed=true, we start at 1 - startProgress (and go to 0).
-     * @return The Animator, which the caller must start.
-     */
-    public ValueAnimator createRevealAnimator(final View revealView, boolean isReversed,
-            float startProgress) {
-        ValueAnimator va = isReversed
-                ? ValueAnimator.ofFloat(1f - startProgress, 0f)
-                : ValueAnimator.ofFloat(startProgress, 1f);
+        ValueAnimator va =
+                isReversed ? ValueAnimator.ofFloat(1f, 0f) : ValueAnimator.ofFloat(0f, 1f);
         final float elevation = revealView.getElevation();
 
         va.addListener(new AnimatorListenerAdapter() {
@@ -74,10 +58,16 @@ public abstract class RevealOutlineAnimation extends ViewOutlineProvider {
 
         });
 
-        va.addUpdateListener(v -> {
-            float progress = (Float) v.getAnimatedValue();
-            setProgress(progress);
-            revealView.invalidateOutline();
+        va.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator arg0) {
+                float progress = (Float) arg0.getAnimatedValue();
+                setProgress(progress);
+                revealView.invalidateOutline();
+                if (!Utilities.ATLEAST_LOLLIPOP_MR1) {
+                    revealView.invalidate();
+                }
+            }
         });
         return va;
     }

@@ -16,8 +16,7 @@
 
 package com.android.launcher3;
 
-import static com.android.launcher3.model.WidgetsModel.GO_DISABLE_WIDGETS;
-import static com.android.launcher3.util.SystemUiController.UI_STATE_FULLSCREEN_TASK;
+import static com.android.launcher3.util.SystemUiController.UI_STATE_OVERVIEW;
 
 import static java.lang.annotation.RetentionPolicy.SOURCE;
 
@@ -25,32 +24,23 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
-import android.content.pm.LauncherApps;
 import android.content.res.Configuration;
-import android.graphics.Rect;
-import android.os.Bundle;
-import android.os.UserHandle;
-import android.util.Log;
-
 import androidx.annotation.IntDef;
+import android.view.View.AccessibilityDelegate;
 
 import com.android.launcher3.DeviceProfile.OnDeviceProfileChangeListener;
-import com.android.launcher3.logging.StatsLogManager;
+import com.android.launcher3.logging.UserEventDispatcher;
+import com.android.launcher3.logging.UserEventDispatcher.UserEventDelegate;
+import com.android.launcher3.uioverrides.UiFactory;
+import com.android.launcher3.userevent.nano.LauncherLogProto;
 import com.android.launcher3.util.SystemUiController;
-import com.android.launcher3.util.ViewCache;
-import com.android.launcher3.views.ActivityContext;
-import com.android.launcher3.views.ScrimView;
 
+import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.util.ArrayList;
 
-/**
- * Launcher BaseActivity
- */
-public abstract class BaseActivity extends Activity implements ActivityContext {
-
-    private static final String TAG = "BaseActivity";
+public abstract class BaseActivity extends Activity implements UserEventDelegate{
 
     public static final int INVISIBLE_BY_STATE_HANDLER = 1 << 0;
     public static final int INVISIBLE_BY_APP_TRANSITIONS = 1 << 1;
@@ -80,47 +70,22 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
             new ArrayList<>();
 
     protected DeviceProfile mDeviceProfile;
-    protected StatsLogManager mStatsLogManager;
+    protected UserEventDispatcher mUserEventDispatcher;
     protected SystemUiController mSystemUiController;
 
-
-    public static final int ACTIVITY_STATE_STARTED = 1 << 0;
-    public static final int ACTIVITY_STATE_RESUMED = 1 << 1;
-
+    private static final int ACTIVITY_STATE_STARTED = 1 << 0;
+    private static final int ACTIVITY_STATE_RESUMED = 1 << 1;
     /**
-     * State flags indicating that the activity has received one frame after resume, and was
-     * not immediately paused.
-     */
-    public static final int ACTIVITY_STATE_DEFERRED_RESUMED = 1 << 2;
-
-    public static final int ACTIVITY_STATE_WINDOW_FOCUSED = 1 << 3;
-
-    /**
-     * State flag indicating if the user is active or the activity when to background as a result
+     * State flag indicating if the user is active or the actitvity when to background as a result
      * of user action.
      * @see #isUserActive()
      */
-    public static final int ACTIVITY_STATE_USER_ACTIVE = 1 << 4;
-
-    /**
-     * State flag indicating if the user will be active shortly.
-     */
-    public static final int ACTIVITY_STATE_USER_WILL_BE_ACTIVE = 1 << 5;
-
-    /**
-     * State flag indicating that a state transition is in progress
-     */
-    public static final int ACTIVITY_STATE_TRANSITION_ACTIVE = 1 << 6;
+    private static final int ACTIVITY_STATE_USER_ACTIVE = 1 << 2;
 
     @Retention(SOURCE)
     @IntDef(
             flag = true,
-            value = {ACTIVITY_STATE_STARTED,
-                    ACTIVITY_STATE_RESUMED,
-                    ACTIVITY_STATE_DEFERRED_RESUMED,
-                    ACTIVITY_STATE_WINDOW_FOCUSED,
-                    ACTIVITY_STATE_USER_ACTIVE,
-                    ACTIVITY_STATE_TRANSITION_ACTIVE})
+            value = {ACTIVITY_STATE_STARTED, ACTIVITY_STATE_RESUMED, ACTIVITY_STATE_USER_ACTIVE})
     public @interface ActivityFlags{}
 
     @ActivityFlags
@@ -130,27 +95,32 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
     // animation
     @InvisibilityFlags private int mForceInvisible;
 
-    private final ViewCache mViewCache = new ViewCache();
-
-    @Override
-    public ViewCache getViewCache() {
-        return mViewCache;
-    }
-
-    @Override
     public DeviceProfile getDeviceProfile() {
         return mDeviceProfile;
     }
 
-    /**
-     * Returns {@link StatsLogManager} for user event logging.
-     */
-    @Override
-    public StatsLogManager getStatsLogManager() {
-        if (mStatsLogManager == null) {
-            mStatsLogManager = StatsLogManager.newInstance(this);
+    public AccessibilityDelegate getAccessibilityDelegate() {
+        return null;
+    }
+
+    public void modifyUserEvent(LauncherLogProto.LauncherEvent event) {}
+
+    public final UserEventDispatcher getUserEventDispatcher() {
+        if (mUserEventDispatcher == null) {
+            mUserEventDispatcher = UserEventDispatcher.newInstance(this, mDeviceProfile, this);
         }
-        return mStatsLogManager;
+        return mUserEventDispatcher;
+    }
+
+    public boolean isInMultiWindowModeCompat() {
+        return Utilities.ATLEAST_NOUGAT && isInMultiWindowMode();
+    }
+
+    public static BaseActivity fromContext(Context context) {
+        if (context instanceof BaseActivity) {
+            return (BaseActivity) context;
+        }
+        return ((BaseActivity) ((ContextWrapper) context).getBaseContext());
     }
 
     public SystemUiController getSystemUiController() {
@@ -160,10 +130,6 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
         return mSystemUiController;
     }
 
-    public ScrimView getScrimView() {
-        return null;
-    }
-
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -171,20 +137,19 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
 
     @Override
     protected void onStart() {
-        addActivityFlags(ACTIVITY_STATE_STARTED);
+        mActivityFlags |= ACTIVITY_STATE_STARTED;
         super.onStart();
     }
 
     @Override
     protected void onResume() {
-        addActivityFlags(ACTIVITY_STATE_RESUMED | ACTIVITY_STATE_USER_ACTIVE);
-        removeActivityFlags(ACTIVITY_STATE_USER_WILL_BE_ACTIVE);
+        mActivityFlags |= ACTIVITY_STATE_RESUMED | ACTIVITY_STATE_USER_ACTIVE;
         super.onResume();
     }
 
     @Override
     protected void onUserLeaveHint() {
-        removeActivityFlags(ACTIVITY_STATE_USER_ACTIVE);
+        mActivityFlags &= ~ACTIVITY_STATE_USER_ACTIVE;
         super.onUserLeaveHint();
     }
 
@@ -198,36 +163,21 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
 
     @Override
     protected void onStop() {
-        removeActivityFlags(ACTIVITY_STATE_STARTED | ACTIVITY_STATE_USER_ACTIVE);
+        mActivityFlags &= ~ACTIVITY_STATE_STARTED & ~ACTIVITY_STATE_USER_ACTIVE;
         mForceInvisible = 0;
         super.onStop();
-
-        // Reset the overridden sysui flags used for the task-swipe launch animation, this is a
-        // catch all for if we do not get resumed (and therefore not paused below)
-        getSystemUiController().updateUiState(UI_STATE_FULLSCREEN_TASK, 0);
     }
 
     @Override
     protected void onPause() {
-        removeActivityFlags(ACTIVITY_STATE_RESUMED | ACTIVITY_STATE_DEFERRED_RESUMED);
+        mActivityFlags &= ~ACTIVITY_STATE_RESUMED;
         super.onPause();
 
         // Reset the overridden sysui flags used for the task-swipe launch animation, we do this
         // here instead of at the end of the animation because the start of the new activity does
         // not happen immediately, which would cause us to reset to launcher's sysui flags and then
         // back to the new app (causing a flash)
-        getSystemUiController().updateUiState(UI_STATE_FULLSCREEN_TASK, 0);
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) {
-            addActivityFlags(ACTIVITY_STATE_WINDOW_FOCUSED);
-        } else {
-            removeActivityFlags(ACTIVITY_STATE_WINDOW_FOCUSED);
-        }
-
+        getSystemUiController().updateUiState(UI_STATE_OVERVIEW, 0);
     }
 
     public boolean isStarted() {
@@ -244,22 +194,6 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
     public boolean isUserActive() {
         return (mActivityFlags & ACTIVITY_STATE_USER_ACTIVE) != 0;
     }
-
-    public int getActivityFlags() {
-        return mActivityFlags;
-    }
-
-    protected void addActivityFlags(int flags) {
-        mActivityFlags |= flags;
-        onActivityFlagsChanged(flags);
-    }
-
-    protected void removeActivityFlags(int flags) {
-        mActivityFlags &= ~flags;
-        onActivityFlagsChanged(flags);
-    }
-
-    protected void onActivityFlagsChanged(int changeBits) { }
 
     public void addOnDeviceProfileChangeListener(OnDeviceProfileChangeListener listener) {
         mDPChangeListeners.add(listener);
@@ -286,7 +220,7 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
     /**
      * Used to set the override visibility state, used only to handle the transition home with the
      * recents animation.
-     * @see QuickstepTransitionManager#createWallpaperOpenRunner
+     * @see LauncherAppTransitionManagerImpl#getWallpaperOpenRunner()
      */
     public void addForceInvisibleFlag(@InvisibilityFlags int flag) {
         mForceInvisible |= flag;
@@ -311,38 +245,18 @@ public abstract class BaseActivity extends Activity implements ActivityContext {
         void onMultiWindowModeChanged(boolean isInMultiWindowMode);
     }
 
-    protected void dumpMisc(String prefix, PrintWriter writer) {
-        writer.println(prefix + "deviceProfile isTransposed="
-                + getDeviceProfile().isVerticalBarLayout());
-        writer.println(prefix + "orientation=" + getResources().getConfiguration().orientation);
-        writer.println(prefix + "mSystemUiController: " + mSystemUiController);
-        writer.println(prefix + "mActivityFlags: " + mActivityFlags);
-        writer.println(prefix + "mForceInvisible: " + mForceInvisible);
-    }
-
-    /**
-     * A wrapper around the platform method with Launcher specific checks
-     */
-    public void startShortcut(String packageName, String id, Rect sourceBounds,
-            Bundle startActivityOptions, UserHandle user) {
-        if (GO_DISABLE_WIDGETS) {
-            return;
-        }
-        try {
-            getSystemService(LauncherApps.class).startShortcut(packageName, id, sourceBounds,
-                    startActivityOptions, user);
-        } catch (SecurityException | IllegalStateException e) {
-            Log.e(TAG, "Failed to start shortcut", e);
+    @Override
+    public void dump(String prefix, FileDescriptor fd, PrintWriter writer, String[] args) {
+        if (!UiFactory.dumpActivity(this, writer)) {
+            super.dump(prefix, fd, writer, args);
         }
     }
 
-    public static <T extends BaseActivity> T fromContext(Context context) {
-        if (context instanceof BaseActivity) {
-            return (T) context;
-        } else if (context instanceof ContextWrapper) {
-            return fromContext(((ContextWrapper) context).getBaseContext());
-        } else {
-            throw new IllegalArgumentException("Cannot find BaseActivity in parent tree");
-        }
+    protected void dumpMisc(PrintWriter writer) {
+        writer.println(" deviceProfile isTransposed=" + getDeviceProfile().isVerticalBarLayout());
+        writer.println(" orientation=" + getResources().getConfiguration().orientation);
+        writer.println(" mSystemUiController: " + mSystemUiController);
+        writer.println(" mActivityFlags: " + mActivityFlags);
+        writer.println(" mForceInvisible: " + mForceInvisible);
     }
 }

@@ -15,24 +15,21 @@
  */
 package com.android.launcher3;
 
-import static com.android.launcher3.util.UiThreadHelper.hideKeyboardAsync;
-
 import android.content.Context;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.DragEvent;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 
-import com.android.launcher3.views.ActivityContext;
-
-import app.lawnchair.font.FontManager;
+import ch.deletescape.lawnchair.font.CustomFontManager;
+import com.android.launcher3.util.UiThreadHelper;
 
 
 /**
  * The edit text that reports back when the back key has been pressed.
- * Note: AppCompatEditText doesn't fully support #displayCompletions and #onCommitCompletion
  */
 public class ExtendedEditText extends EditText {
 
@@ -43,7 +40,7 @@ public class ExtendedEditText extends EditText {
      * Implemented by listeners of the back key.
      */
     public interface OnBackKeyListener {
-        boolean onBackKey();
+        public boolean onBackKey();
     }
 
     private OnBackKeyListener mBackKeyListener;
@@ -56,12 +53,12 @@ public class ExtendedEditText extends EditText {
     public ExtendedEditText(Context context, AttributeSet attrs) {
         // ctor chaining breaks the touch handling
         super(context, attrs);
-        FontManager.INSTANCE.get(context).overrideFont(this, attrs);
+        CustomFontManager.Companion.getInstance(context).loadCustomFont(this, attrs);
     }
 
     public ExtendedEditText(Context context, AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
-        FontManager.INSTANCE.get(context).overrideFont(this, attrs);
+        CustomFontManager.Companion.getInstance(context).loadCustomFont(this, attrs);
     }
 
     public void setOnBackKeyListener(OnBackKeyListener listener) {
@@ -72,9 +69,6 @@ public class ExtendedEditText extends EditText {
     public boolean onKeyPreIme(int keyCode, KeyEvent event) {
         // If this is a back key, propagate the key back to the listener
         if (keyCode == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
-            if (TextUtils.isEmpty(getText())) {
-                hideKeyboard();
-            }
             if (mBackKeyListener != null) {
                 return mBackKeyListener.onBackKey();
             }
@@ -94,9 +88,12 @@ public class ExtendedEditText extends EditText {
         super.onLayout(changed, left, top, right, bottom);
         if (mShowImeAfterFirstLayout) {
             // soft input only shows one frame after the layout of the EditText happens,
-            post(() -> {
-                showSoftInput();
-                mShowImeAfterFirstLayout = false;
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    showSoftInput();
+                    mShowImeAfterFirstLayout = false;
+                }
             });
         }
     }
@@ -106,12 +103,12 @@ public class ExtendedEditText extends EditText {
     }
 
     public void hideKeyboard() {
-        hideKeyboardAsync(ActivityContext.lookupContext(getContext()), getWindowToken());
+        UiThreadHelper.hideKeyboardAsync(getContext(), getWindowToken());
     }
 
     private boolean showSoftInput() {
         return requestFocus() &&
-                getContext().getSystemService(InputMethodManager.class)
+                ((InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE))
                     .showSoftInput(this, InputMethodManager.SHOW_IMPLICIT);
     }
 
@@ -139,5 +136,12 @@ public class ExtendedEditText extends EditText {
         if (!TextUtils.isEmpty(getText())) {
             setText("");
         }
+        if (isFocused()) {
+            View nextFocus = focusSearch(View.FOCUS_DOWN);
+            if (nextFocus != null) {
+                nextFocus.requestFocus();
+            }
+        }
+        hideKeyboard();
     }
 }

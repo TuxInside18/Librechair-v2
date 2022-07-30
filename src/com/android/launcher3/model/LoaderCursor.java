@@ -20,46 +20,39 @@ import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.Intent.ShortcutIconResource;
 import android.content.pm.LauncherActivityInfo;
-import android.content.pm.LauncherApps;
-import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.database.CursorWrapper;
-import android.net.Uri;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.UserHandle;
 import android.provider.BaseColumns;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.LongSparseArray;
-
-import androidx.annotation.Nullable;
-import androidx.annotation.VisibleForTesting;
-
+import ch.deletescape.lawnchair.LawnchairPreferences;
+import com.android.launcher3.AppInfo;
+import com.android.launcher3.IconCache;
 import com.android.launcher3.InvariantDeviceProfile;
+import com.android.launcher3.ItemInfo;
 import com.android.launcher3.LauncherAppState;
 import com.android.launcher3.LauncherSettings;
-import com.android.launcher3.LauncherSettings.Favorites;
+import com.android.launcher3.ShortcutInfo;
 import com.android.launcher3.Utilities;
 import com.android.launcher3.Workspace;
+import com.android.launcher3.compat.LauncherAppsCompat;
+import com.android.launcher3.compat.UserManagerCompat;
 import com.android.launcher3.config.FeatureFlags;
-import com.android.launcher3.icons.IconCache;
+import com.android.launcher3.graphics.BitmapInfo;
+import com.android.launcher3.graphics.LauncherIcons;
 import com.android.launcher3.logging.FileLog;
-import com.android.launcher3.model.data.AppInfo;
-import com.android.launcher3.model.data.IconRequestInfo;
-import com.android.launcher3.model.data.ItemInfo;
-import com.android.launcher3.model.data.WorkspaceItemInfo;
-import com.android.launcher3.shortcuts.ShortcutKey;
 import com.android.launcher3.util.ContentWriter;
 import com.android.launcher3.util.GridOccupancy;
-import com.android.launcher3.util.IntArray;
-import com.android.launcher3.util.IntSparseArrayMap;
-import com.patrykmichalik.opto.core.PreferenceExtensionsKt;
-
+import com.android.launcher3.util.LongArrayMap;
 import java.net.URISyntaxException;
 import java.security.InvalidParameterException;
-
-import app.lawnchair.LawnchairApp;
-import app.lawnchair.preferences2.PreferenceManager2;
+import java.util.ArrayList;
 
 /**
  * Extension of {@link Cursor} with utility methods for workspace loading.
@@ -68,21 +61,21 @@ public class LoaderCursor extends CursorWrapper {
 
     private static final String TAG = "LoaderCursor";
 
-    private final LongSparseArray<UserHandle> allUsers;
+    public final LongSparseArray<UserHandle> allUsers = new LongSparseArray<>();
 
-    private final Uri mContentUri;
     private final Context mContext;
-    private final PackageManager mPM;
+    private final UserManagerCompat mUserManager;
     private final IconCache mIconCache;
     private final InvariantDeviceProfile mIDP;
 
-    private final IntArray itemsToRemove = new IntArray();
-    private final IntArray restoredRows = new IntArray();
-    private final IntSparseArrayMap<GridOccupancy> occupied = new IntSparseArrayMap<>();
+    private final ArrayList<Long> itemsToRemove = new ArrayList<>();
+    private final ArrayList<Long> restoredRows = new ArrayList<>();
+    private final LongArrayMap<GridOccupancy> occupied = new LongArrayMap<>();
 
     private final int iconPackageIndex;
     private final int iconResourceIndex;
     private final int iconIndex;
+    private final int customIconIndex;
     public final int titleIndex;
 
     private final int idIndex;
@@ -95,33 +88,26 @@ public class LoaderCursor extends CursorWrapper {
     private final int restoredIndex;
     private final int intentIndex;
 
-    @Nullable
-    private LauncherActivityInfo mActivityInfo;
-
     // Properties loaded per iteration
     public long serialNumber;
     public UserHandle user;
-    public int id;
-    public int container;
+    public long id;
+    public long container;
     public int itemType;
     public int restoreFlag;
 
-    private final PreferenceManager2 preferenceManager2;
+    private final LawnchairPreferences prefs;
 
-    public LoaderCursor(Cursor cursor, Uri contentUri, LauncherAppState app,
-            UserManagerState userManagerState) {
-        super(cursor);
-        allUsers = userManagerState.allUsers;
-        mContentUri = contentUri;
+    public LoaderCursor(Cursor c, LauncherAppState app) {
+        super(c);
         mContext = app.getContext();
         mIconCache = app.getIconCache();
         mIDP = app.getInvariantDeviceProfile();
-        mPM = mContext.getPackageManager();
-
-        preferenceManager2 = PreferenceManager2.getInstance(mContext);
+        mUserManager = UserManagerCompat.getInstance(mContext);
 
         // Init column indices
         iconIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.ICON);
+        customIconIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.CUSTOM_ICON);
         iconPackageIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.ICON_PACKAGE);
         iconResourceIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.ICON_RESOURCE);
         titleIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.TITLE);
@@ -135,18 +121,18 @@ public class LoaderCursor extends CursorWrapper {
         profileIdIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.PROFILE_ID);
         restoredIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.RESTORED);
         intentIndex = getColumnIndexOrThrow(LauncherSettings.Favorites.INTENT);
+
+        prefs = Utilities.getLawnchairPrefs(mContext);
     }
 
     @Override
     public boolean moveToNext() {
         boolean result = super.moveToNext();
         if (result) {
-            mActivityInfo = null;
-
             // Load common properties.
             itemType = getInt(itemTypeIndex);
             container = getInt(containerIndex);
-            id = getInt(idIndex);
+            id = getLong(idIndex);
             serialNumber = getInt(profileIdIndex);
             user = allUsers.get(serialNumber);
             restoreFlag = getInt(restoredIndex);
@@ -165,17 +151,15 @@ public class LoaderCursor extends CursorWrapper {
         }
     }
 
-    @VisibleForTesting
-    public WorkspaceItemInfo loadSimpleWorkspaceItem() {
-        final WorkspaceItemInfo info = new WorkspaceItemInfo();
-        info.intent = new Intent();
+    public ShortcutInfo loadSimpleShortcut() {
+        final ShortcutInfo info = new ShortcutInfo();
         // Non-app shortcuts are only supported for current user.
         info.user = user;
         info.itemType = itemType;
         info.title = getTitle();
-        // the fallback icon
+        // the fallback iconView
         if (!loadIcon(info)) {
-            info.bitmap = mIconCache.getDefaultIcon(info.user);
+            mIconCache.getDefaultIcon(info.user).applyTo(info);
         }
 
         // TODO: If there's an explicit component and we can't install that, delete it.
@@ -184,54 +168,80 @@ public class LoaderCursor extends CursorWrapper {
     }
 
     /**
-     * Loads the icon from the cursor and updates the {@param info} if the icon is an app resource.
+     * Loads the iconView from the cursor and updates the {@param info} if the iconView is an app resource.
      */
-    protected boolean loadIcon(WorkspaceItemInfo info) {
-        return createIconRequestInfo(info, false).loadWorkspaceIcon(mContext);
+    protected boolean loadIcon(ShortcutInfo info) {
+        if (itemType == LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT) {
+            String packageName = getString(iconPackageIndex);
+            String resourceName = getString(iconResourceIndex);
+            if (!TextUtils.isEmpty(packageName) || !TextUtils.isEmpty(resourceName)) {
+                info.iconResource = new ShortcutIconResource();
+                info.iconResource.packageName = packageName;
+                info.iconResource.resourceName = resourceName;
+                LauncherIcons li = LauncherIcons.obtain(mContext);
+                BitmapInfo iconInfo = li.createIconBitmap(info.iconResource);
+                li.recycle();
+                if (iconInfo != null) {
+                    iconInfo.applyTo(info);
+                    return true;
+                }
+            }
+        }
+
+        // Failed to load from resource, try loading from DB.
+        byte[] data = getBlob(iconIndex);
+        try (LauncherIcons li = LauncherIcons.obtain(mContext)) {
+            li.createIconBitmap(BitmapFactory.decodeByteArray(data, 0, data.length)).applyTo(info);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to load iconView for info " + info, e);
+            return false;
+        }
     }
 
-    public IconRequestInfo<WorkspaceItemInfo> createIconRequestInfo(
-            WorkspaceItemInfo wai, boolean useLowResIcon) {
-        String packageName = itemType == LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT
-                ? getString(iconPackageIndex) : null;
-        String resourceName = itemType == LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT
-                ? getString(iconResourceIndex) : null;
-        byte[] iconBlob = itemType == LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT
-                || itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT
-                || restoreFlag != 0
-                ? getBlob(iconIndex) : null;
-
-        return new IconRequestInfo<>(
-                wai, mActivityInfo, packageName, resourceName, iconBlob, useLowResIcon);
+    public Bitmap loadCustomIcon(ShortcutInfo info) {
+        byte[] data = getBlob(customIconIndex);
+        try {
+            if (data != null) {
+                return LauncherIcons.obtain(mContext).createIconBitmap(
+                        BitmapFactory.decodeByteArray(data, 0, data.length)).icon;
+            } else {
+                return null;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to load custom iconView for info " + info, e);
+            return null;
+        }
     }
 
     /**
      * Returns the title or empty string
      */
     private String getTitle() {
-        return Utilities.trim(getString(titleIndex));
+        String title = getString(titleIndex);
+        return TextUtils.isEmpty(title) ? "" : Utilities.trim(title);
     }
 
     /**
-     * Make an WorkspaceItemInfo object for a restored application or shortcut item that points
+     * Make an ShortcutInfo object for a restored application or shortcut item that points
      * to a package that is not yet installed on the system.
      */
-    public WorkspaceItemInfo getRestoredItemInfo(Intent intent) {
-        final WorkspaceItemInfo info = new WorkspaceItemInfo();
+    public ShortcutInfo getRestoredItemInfo(Intent intent) {
+        final ShortcutInfo info = new ShortcutInfo();
         info.user = user;
         info.intent = intent;
 
-        // the fallback icon
+        // the fallback iconView
         if (!loadIcon(info)) {
             mIconCache.getTitleAndIcon(info, false /* useLowResIcon */);
         }
 
-        if (hasRestoreFlag(WorkspaceItemInfo.FLAG_RESTORED_ICON)) {
+        if (hasRestoreFlag(ShortcutInfo.FLAG_RESTORED_ICON)) {
             String title = getTitle();
             if (!TextUtils.isEmpty(title)) {
                 info.title = Utilities.trim(title);
             }
-        } else if (hasRestoreFlag(WorkspaceItemInfo.FLAG_AUTOINSTALL_ICON)) {
+        } else if  (hasRestoreFlag(ShortcutInfo.FLAG_AUTOINSTALL_ICON)) {
             if (TextUtils.isEmpty(info.title)) {
                 info.title = getTitle();
             }
@@ -239,26 +249,17 @@ public class LoaderCursor extends CursorWrapper {
             throw new InvalidParameterException("Invalid restoreType " + restoreFlag);
         }
 
-        info.contentDescription = mPM.getUserBadgedLabel(info.title, info.user);
+        info.contentDescription = mUserManager.getBadgedLabelForUser(info.title, info.user);
         info.itemType = itemType;
         info.status = restoreFlag;
         return info;
     }
 
-    public LauncherActivityInfo getLauncherActivityInfo() {
-        return mActivityInfo;
-    }
-
     /**
-     * Make an WorkspaceItemInfo object for a shortcut that is an application.
+     * Make an ShortcutInfo object for a shortcut that is an application.
      */
-    public WorkspaceItemInfo getAppShortcutInfo(
+    public ShortcutInfo getAppShortcutInfo(
             Intent intent, boolean allowMissingTarget, boolean useLowResIcon) {
-        return getAppShortcutInfo(intent, allowMissingTarget, useLowResIcon, true);
-    }
-
-    public WorkspaceItemInfo getAppShortcutInfo(
-            Intent intent, boolean allowMissingTarget, boolean useLowResIcon, boolean loadIcon) {
         if (user == null) {
             Log.d(TAG, "Null user found in getShortcutInfo");
             return null;
@@ -273,27 +274,25 @@ public class LoaderCursor extends CursorWrapper {
         Intent newIntent = new Intent(Intent.ACTION_MAIN, null);
         newIntent.addCategory(Intent.CATEGORY_LAUNCHER);
         newIntent.setComponent(componentName);
-        mActivityInfo = mContext.getSystemService(LauncherApps.class)
+        LauncherActivityInfo lai = LauncherAppsCompat.getInstance(mContext)
                 .resolveActivity(newIntent, user);
-        if ((mActivityInfo == null) && !allowMissingTarget) {
+        if ((lai == null) && !allowMissingTarget) {
             Log.d(TAG, "Missing activity found in getShortcutInfo: " + componentName);
             return null;
         }
 
-        final WorkspaceItemInfo info = new WorkspaceItemInfo();
-        info.itemType = Favorites.ITEM_TYPE_APPLICATION;
+        final ShortcutInfo info = new ShortcutInfo();
+        info.itemType = LauncherSettings.Favorites.ITEM_TYPE_APPLICATION;
         info.user = user;
         info.intent = newIntent;
 
-        if (loadIcon) {
-            mIconCache.getTitleAndIcon(info, mActivityInfo, useLowResIcon);
-            if (mIconCache.isDefaultIcon(info.bitmap, user)) {
-                loadIcon(info);
-            }
+        mIconCache.getTitleAndIcon(info, lai, useLowResIcon);
+        if (mIconCache.isDefaultIcon(info.iconBitmap, user)) {
+            loadIcon(info);
         }
 
-        if (mActivityInfo != null) {
-            AppInfo.updateRuntimeFlagsForActivityTarget(info, mActivityInfo);
+        if (lai != null) {
+            AppInfo.updateRuntimeFlagsForActivityTarget(info, lai);
         }
 
         // from the db
@@ -306,7 +305,7 @@ public class LoaderCursor extends CursorWrapper {
             info.title = componentName.getClassName();
         }
 
-        info.contentDescription = mPM.getUserBadgedLabel(info.title, info.user);
+        info.contentDescription = mUserManager.getBadgedLabelForUser(info.title, info.user);
         return info;
     }
 
@@ -315,7 +314,7 @@ public class LoaderCursor extends CursorWrapper {
      */
     public ContentWriter updater() {
        return new ContentWriter(mContext, new ContentWriter.CommitParams(
-               BaseColumns._ID + "= ?", new String[]{Integer.toString(id)}));
+               BaseColumns._ID + "= ?", new String[]{Long.toString(id)}));
     }
 
     /**
@@ -333,8 +332,9 @@ public class LoaderCursor extends CursorWrapper {
     public boolean commitDeleted() {
         if (itemsToRemove.size() > 0) {
             // Remove dead items
-            mContext.getContentResolver().delete(mContentUri, Utilities.createDbSelectionQuery(
-                    LauncherSettings.Favorites._ID, itemsToRemove), null);
+            mContext.getContentResolver().delete(LauncherSettings.Favorites.CONTENT_URI,
+                    Utilities.createDbSelectionQuery(
+                            LauncherSettings.Favorites._ID, itemsToRemove), null);
             return true;
         }
         return false;
@@ -359,7 +359,7 @@ public class LoaderCursor extends CursorWrapper {
             // Update restored items that no longer require special handling
             ContentValues values = new ContentValues();
             values.put(LauncherSettings.Favorites.RESTORED, 0);
-            mContext.getContentResolver().update(mContentUri, values,
+            mContext.getContentResolver().update(LauncherSettings.Favorites.CONTENT_URI, values,
                     Utilities.createDbSelectionQuery(
                             LauncherSettings.Favorites._ID, restoredRows), null);
         }
@@ -389,23 +389,13 @@ public class LoaderCursor extends CursorWrapper {
         info.cellY = getInt(cellYIndex);
     }
 
-    public void checkAndAddItem(ItemInfo info, BgDataModel dataModel) {
-        checkAndAddItem(info, dataModel, null);
-    }
-
     /**
      * Adds the {@param info} to {@param dataModel} if it does not overlap with any other item,
      * otherwise marks it for deletion.
      */
-    public void checkAndAddItem(
-            ItemInfo info, BgDataModel dataModel, LoaderMemoryLogger logger) {
-        if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_DEEP_SHORTCUT) {
-            // Ensure that it is a valid intent. An exception here will
-            // cause the item loading to get skipped
-            ShortcutKey.fromItemInfo(info);
-        }
-        if (checkItemPlacement(info)) {
-            dataModel.addItem(mContext, info, false, logger);
+    public void checkAndAddItem(ItemInfo info, BgDataModel dataModel) {
+        if (checkItemPlacement(info, dataModel.workspaceScreens)) {
+            dataModel.addItem(mContext, info, false);
         } else {
             markDeleted("Item position overlap");
         }
@@ -414,37 +404,56 @@ public class LoaderCursor extends CursorWrapper {
     /**
      * check & update map of what's occupied; used to discard overlapping/invalid items
      */
-    protected boolean checkItemPlacement(ItemInfo item) {
-        int containerIndex = item.screenId;
+    protected boolean checkItemPlacement(ItemInfo item, ArrayList<Long> workspaceScreens) {
+        long containerIndex = item.screenId;
         if (item.container == LauncherSettings.Favorites.CONTAINER_HOTSEAT) {
-            final GridOccupancy hotseatOccupancy =
-                    occupied.get(LauncherSettings.Favorites.CONTAINER_HOTSEAT);
+            // Return early if we detect that an item is under the hotseat button
+            if (!FeatureFlags.NO_ALL_APPS_ICON &&
+                    mIDP.isAllAppsButtonRank((int) item.screenId)) {
+                Log.e(TAG, "Error loading shortcut into hotseat " + item
+                        + " into position (" + item.screenId + ":" + item.cellX + ","
+                        + item.cellY + ") occupied by all apps");
+                return false;
+            }
 
-            if (item.screenId >= mIDP.numDatabaseHotseatIcons) {
+            final GridOccupancy hotseatOccupancy =
+                    occupied.get((long) LauncherSettings.Favorites.CONTAINER_HOTSEAT);
+
+            int hotseatRows = Utilities.getLawnchairPrefs(mContext).getDockRowsCount();
+            int hotseatSize = mIDP.numHotseatIcons;
+            int hotseatX = (int) (item.screenId % hotseatSize);
+            int hotseatY = (int) (item.screenId / hotseatSize);
+
+            if (item.screenId >= mIDP.numHotseatIcons * hotseatRows) {
                 Log.e(TAG, "Error loading shortcut " + item
                         + " into hotseat position " + item.screenId
-                        + ", position out of bounds: (0 to " + (mIDP.numDatabaseHotseatIcons - 1)
+                        + ", position out of bounds: (0 to " + (mIDP.numHotseatIcons - 1)
                         + ")");
                 return false;
             }
 
             if (hotseatOccupancy != null) {
-                if (hotseatOccupancy.cells[(int) item.screenId][0]) {
+                if (hotseatOccupancy.cells[hotseatX][hotseatY]) {
                     Log.e(TAG, "Error loading shortcut into hotseat " + item
                             + " into position (" + item.screenId + ":" + item.cellX + ","
                             + item.cellY + ") already occupied");
                     return false;
                 } else {
-                    hotseatOccupancy.cells[item.screenId][0] = true;
+                    hotseatOccupancy.cells[hotseatX][hotseatY] = true;
                     return true;
                 }
             } else {
-                final GridOccupancy occupancy = new GridOccupancy(mIDP.numDatabaseHotseatIcons, 1);
-                occupancy.cells[item.screenId][0] = true;
-                occupied.put(LauncherSettings.Favorites.CONTAINER_HOTSEAT, occupancy);
+                final GridOccupancy occupancy = new GridOccupancy(hotseatSize, hotseatRows);
+                occupancy.cells[hotseatX][hotseatY] = true;
+                occupied.put((long) LauncherSettings.Favorites.CONTAINER_HOTSEAT, occupancy);
                 return true;
             }
-        } else if (item.container != LauncherSettings.Favorites.CONTAINER_DESKTOP) {
+        } else if (item.container == LauncherSettings.Favorites.CONTAINER_DESKTOP) {
+            if (!workspaceScreens.contains((Long) item.screenId)) {
+                // The item has an invalid screen id.
+                return false;
+            }
+        } else {
             // Skip further checking if it is not the hotseat or workspace container
             return true;
         }
@@ -466,8 +475,7 @@ public class LoaderCursor extends CursorWrapper {
             if (item.screenId == Workspace.FIRST_SCREEN_ID) {
                 // Mark the first row as occupied (if the feature is enabled)
                 // in order to account for the QSB.
-                int spanY = FeatureFlags.EXPANDED_SMARTSPACE.get() ? 2 : 1;
-                screen.markCells(0, 0, countX + 1, spanY, FeatureFlags.topQsbOnFirstScreenEnabled(LawnchairApp.getInstance()));
+                screen.markCells(0, 0, countX + 1, 1, FeatureFlags.QSB_ON_FIRST_SCREEN);
             }
             occupied.put(item.screenId, screen);
         }
@@ -482,7 +490,7 @@ public class LoaderCursor extends CursorWrapper {
                     + " into cell (" + containerIndex + "-" + item.screenId + ":"
                     + item.cellX + "," + item.cellX + "," + item.spanX + "," + item.spanY
                     + ") already occupied");
-            return PreferenceExtensionsKt.firstBlocking(preferenceManager2.getAllowWidgetOverlap());
+            return prefs.getAllowOverlap();
         }
     }
 }
